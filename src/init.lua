@@ -1359,8 +1359,9 @@ Main = (function()
 	end
 
 	Main.SaveCurrentSettings = function()
-		if writefile then
-			writefile("AxonSettings.json", Main.ExportSettings())
+		local wf = env.writefile or writefile
+		if wf then
+			wf("AxonSettings.json", Main.ExportSettings())
 		end
 	end
 
@@ -1371,12 +1372,14 @@ Main = (function()
 	Main.Init = function()
 		Main.Elevated = pcall(function() local a = game:GetService("CoreGui"):GetFullName() end)
 
+		Main.InitEnv()
+
 		-- saves new settings if does not exist
-		if isfile and not isfile("AxonSettings.json") then
+		local isf = env.isfile or isfile
+		if isf and not isf("AxonSettings.json") then
 			Main.SaveCurrentSettings()
 		end
 
-		Main.InitEnv()
 		Main.LoadSettings() -- loads the settings before init
 
 		Main.SetupFilesystem()
