@@ -2588,6 +2588,8 @@ local function main()
 				{20,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.27450981736183,0.27450981736183,0.27450981736183),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="SouthEast",Parent={14},Position=UDim2.new(1,-5,1,-5),Size=UDim2.new(0,5,0,5),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
 				{21,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.27450981736183,0.27450981736183,0.27450981736183),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="NorthWest",Parent={14},Size=UDim2.new(0,5,0,5),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
 				{22,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.27450981736183,0.27450981736183,0.27450981736183),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="SouthWest",Parent={14},Position=UDim2.new(0,0,1,-5),Size=UDim2.new(0,5,0,5),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
+				{23,"ImageLabel",{BackgroundTransparency=1,Image="rbxassetid://86728831115666",ImageColor3=Settings.Theme and Settings.Theme.Main2 or Color3.fromRGB(35, 37, 45),ImageTransparency=0.8,Name="BackgroundWallpaper",Parent={2},ScaleType=Enum.ScaleType.Crop,Size=UDim2.new(1,0,1,0),ZIndex=0}},
+				{24,"UICorner",{CornerRadius=UDim.new(0,4),Parent={23},}},
 			})
 
 			local guiMain = gui.Main
@@ -2619,9 +2621,17 @@ local function main()
 				self.GuiElems.Title.Size = UDim2.new(1,-20,0,20)
 			end
 
+			if Settings.Theme then
+				self.GuiElems.Content.BackgroundColor3 = Settings.Theme.Main1
+				self.GuiElems.TopBar.BackgroundColor3 = Settings.Theme.Main2
+				if self.GuiElems.Line then
+					self.GuiElems.Line.BackgroundColor3 = Settings.Theme.Outline1
+				end
+			end
+
 			if Settings.Window.Transparency then
 				self.GuiElems.Content.BackgroundTransparency = Settings.Window.Transparency
-				--self.GuiElems
+				self.GuiElems.TopBar.BackgroundTransparency = Settings.Window.Transparency
 			end
 
 
@@ -3331,9 +3341,15 @@ local function main()
 			displayOrderStart = Main.DisplayOrders.Window
 			sideDisplayOrder = Main.DisplayOrders.SideWindow
 
+			if Settings.Theme then
+				theme.MainColor1 = Settings.Theme.Main1
+				theme.MainColor2 = Settings.Theme.Main2
+				theme.Button = Settings.Theme.Button
+			end
+
 			sidesGui = Instance.new("ScreenGui")
 			local leftFrame = create({
-				{1,"Frame",{Active=true,Name="LeftSide",BackgroundColor3=Color3.new(0.17647059261799,0.17647059261799,0.17647059261799),BorderSizePixel=0,}},
+				{1,"Frame",{Active=true,Name="LeftSide",BackgroundColor3=theme.MainColor2,BorderSizePixel=0,}},
 				{2,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.2549019753933,0.2549019753933,0.2549019753933),BorderSizePixel=0,Font=3,Name="Resizer",Parent={1},Size=UDim2.new(0,5,1,0),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
 				{3,"Frame",{BackgroundColor3=Color3.new(0.14117647707462,0.14117647707462,0.14117647707462),BorderSizePixel=0,Name="Line",Parent={2},Position=UDim2.new(0,0,0,0),Size=UDim2.new(0,1,1,0),}},
 				{4,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.2549019753933,0.2549019753933,0.2549019753933),BorderSizePixel=0,Font=3,Name="WindowResizer",Parent={1},Position=UDim2.new(1,-300,0,0),Size=UDim2.new(1,0,0,4),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
@@ -3346,7 +3362,7 @@ local function main()
 			leftFrame.Parent = sidesGui
 
 			local rightFrame = create({
-				{1,"Frame",{Active=true,Name="RightSide",BackgroundColor3=Color3.new(0.17647059261799,0.17647059261799,0.17647059261799),BorderSizePixel=0,}},
+				{1,"Frame",{Active=true,Name="RightSide",BackgroundColor3=theme.MainColor2,BorderSizePixel=0,}},
 				{2,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.2549019753933,0.2549019753933,0.2549019753933),BorderSizePixel=0,Font=3,Name="Resizer",Parent={1},Size=UDim2.new(0,5,1,0),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
 				{3,"Frame",{BackgroundColor3=Color3.new(0.14117647707462,0.14117647707462,0.14117647707462),BorderSizePixel=0,Name="Line",Parent={2},Position=UDim2.new(0,4,0,0),Size=UDim2.new(0,1,1,0),}},
 				{4,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.2549019753933,0.2549019753933,0.2549019753933),BorderSizePixel=0,Font=3,Name="WindowResizer",Parent={1},Position=UDim2.new(1,-300,0,0),Size=UDim2.new(1,0,0,4),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
