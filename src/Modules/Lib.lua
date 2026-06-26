@@ -2588,7 +2588,7 @@ local function main()
 				{20,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.27450981736183,0.27450981736183,0.27450981736183),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="SouthEast",Parent={14},Position=UDim2.new(1,-5,1,-5),Size=UDim2.new(0,5,0,5),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
 				{21,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.27450981736183,0.27450981736183,0.27450981736183),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="NorthWest",Parent={14},Size=UDim2.new(0,5,0,5),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
 				{22,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.27450981736183,0.27450981736183,0.27450981736183),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="SouthWest",Parent={14},Position=UDim2.new(0,0,1,-5),Size=UDim2.new(0,5,0,5),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
-				{23,"ImageLabel",{BackgroundTransparency=1,Image="rbxassetid://98449888558787",ImageColor3=Settings.Theme and Settings.Theme.Main2 or Color3.fromRGB(35, 37, 45),ImageTransparency=0.8,Name="BackgroundWallpaper",Parent={3},ScaleType=Enum.ScaleType.Crop,Size=UDim2.new(1,0,1,0),ZIndex=0}},
+				{23,"ImageLabel",{BackgroundTransparency=1,Image="rbxassetid://98449888558787",ImageColor3=Color3.fromRGB(255,255,255),ImageTransparency=0.93,Name="BackgroundWallpaper",Parent={3},ScaleType=Enum.ScaleType.Crop,Size=UDim2.new(1,0,1,0),ZIndex=0}},
 				{24,"UICorner",{CornerRadius=UDim.new(0,4),Parent={23},}},
 			})
 

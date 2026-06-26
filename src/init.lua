@@ -635,15 +635,22 @@ Main = (function()
 				for k, v in pairs(deserializedData) do
 					Settings[k] = v
 				end
+				if Settings.Window then
+					Settings.Window.Transparency = 0
+				end
+				local resetNeeded = false
 				if Settings.Theme and Settings.Theme.Main1 then
 					local m1 = Settings.Theme.Main1
 					if (math.abs(m1.R - 52/255) < 0.01 and math.abs(m1.G - 52/255) < 0.01 and math.abs(m1.B - 52/255) < 0.01) or
 					   (math.abs(m1.R - 18/255) < 0.01 and math.abs(m1.G - 18/255) < 0.01 and math.abs(m1.B - 20/255) < 0.01) or
 					   (math.abs(m1.R - 15/255) < 0.01 and math.abs(m1.G - 23/255) < 0.01 and math.abs(m1.B - 35/255) < 0.01) then
-						Main.ResetSettings()
-						Main.SaveCurrentSettings()
+						resetNeeded = true
 					end
 				end
+				if resetNeeded then
+					Main.ResetSettings()
+				end
+				Main.SaveCurrentSettings()
 			else
 				warn("failed to decode settings json")
 			end
@@ -1237,7 +1244,7 @@ Main = (function()
 			{19,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://129589545519436",ImageRectSize=Vector2.new(32,32),Name="Icon",Parent={18},Position=UDim2.new(0.5,-16,0,4),ScaleType=4,Size=UDim2.new(0,32,0,32),}},
 			{20,"TextLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="AppName",Parent={18},Position=UDim2.new(0,2,0,38),Size=UDim2.new(1,-4,1,-40),Text="Explorer",TextColor3=Settings.Theme.Text,TextSize=14,TextTransparency=0.10000000149012,TextTruncate=1,TextWrapped=true,TextYAlignment=0,}},
 			{21,"Frame",{BackgroundColor3=Settings.Theme.ListSelection,BorderSizePixel=0,Name="Highlight",Parent={18},Position=UDim2.new(0,0,1,-2),Size=UDim2.new(1,0,0,2),}},
-			{22,"ImageLabel",{BackgroundTransparency=1,Image="rbxassetid://98449888558787",ImageColor3=Settings.Theme.Main2,ImageTransparency=0.8,Name="BackgroundWallpaper",Parent={4},ScaleType=Enum.ScaleType.Crop,Size=UDim2.new(1,0,1,0),ZIndex=0}},
+			{22,"ImageLabel",{BackgroundTransparency=1,Image="rbxassetid://98449888558787",ImageColor3=Color3.fromRGB(255,255,255),ImageTransparency=0.93,Name="BackgroundWallpaper",Parent={4},ScaleType=Enum.ScaleType.Crop,Size=UDim2.new(1,0,1,0),ZIndex=0}},
 			{23,"UICorner",{CornerRadius=UDim.new(0,4),Parent={22},}},
 		})
 		Main.MainGui = gui
