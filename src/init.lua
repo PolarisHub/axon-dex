@@ -725,7 +725,13 @@ Main = (function()
 			table.insert(t,pos,item)
 		end
 
+		local clock = os.clock
+		local parseStart = clock()
 		for _,class in pairs(api.Classes) do
+			if clock() - parseStart > 0.015 then
+				task.wait()
+				parseStart = clock()
+			end
 			local newClass = {}
 			newClass.Name = class.Name
 			newClass.Superclass = class.Superclass
@@ -863,8 +869,14 @@ Main = (function()
 		local enumList = parsed.children[1].children[2].children
 		local propertyOrders = {}
 
+		local clock = os.clock
+		local parseStart = clock()
 		local classes,enums = {},{}
 		for _,class in pairs(classList) do
+			if clock() - parseStart > 0.015 then
+				task.wait()
+				parseStart = clock()
+			end
 			local className = ""
 			for _,child in pairs(class.children) do
 				if child.tag == "Properties" then
@@ -923,6 +935,10 @@ Main = (function()
 		end
 
 		for _,enum in pairs(enumList) do
+			if clock() - parseStart > 0.015 then
+				task.wait()
+				parseStart = clock()
+			end
 			local enumName = ""
 			for _,child in pairs(enum.children) do
 				if child.tag == "Properties" then

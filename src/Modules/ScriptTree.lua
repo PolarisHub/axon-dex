@@ -860,9 +860,6 @@ local function main()
 			OnResize = function() if ScriptTree.Active then ScriptTree.UpdateView() ScriptTree.Refresh() end end,
 		})
 
-		-- Initial build (so it's populated the first time the tab is opened)
-		ScriptTree.Build()
-		ScriptTree.Flatten()
 	end
 
 	return ScriptTree

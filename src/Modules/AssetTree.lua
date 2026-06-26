@@ -731,8 +731,6 @@ local function main()
 			OnResize = function() if AssetTree.Active then AssetTree.UpdateView() AssetTree.Refresh() end end,
 		})
 
-		AssetTree.Build()
-		AssetTree.Flatten()
 	end
 
 	return AssetTree

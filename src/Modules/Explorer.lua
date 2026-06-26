@@ -66,7 +66,7 @@ local function main()
 		if nodes[root] then return end
 
 		local isNil = false
-		local rootParObj = ffa(root,"Instance")
+		local rootParObj = root.Parent
 		local par = nodes[rootParObj]
 
 		-- Nil Handling
@@ -131,7 +131,7 @@ local function main()
 			local obj = insts[i]
 			if nodes[obj] then continue end -- Deferred
 
-			local par = nodes[ffa(obj,"Instance")]
+			local par = nodes[obj.Parent]
 			if not par then continue end
 			local newNode = {Obj = obj, Parent = par}
 			nodes[obj] = newNode
@@ -202,7 +202,7 @@ local function main()
 		if not node then return end
 
 		local oldPar = node.Parent
-		local newPar = nodes[ffa(obj,"Instance")]
+		local newPar = nodes[obj.Parent]
 		if oldPar == newPar then return end
 
 		-- Nil Handling
@@ -2684,10 +2684,17 @@ return search]==]
 		Explorer.SetupConnections()
 
 		local insts = getDescendants(game)
+		local count = #insts
+		local start = os.clock()
 		if Main.Elevated then
-			for i = 1,#insts do
+			for i = 1,count do
+				if i % 1000 == 0 and os.clock() - start > 0.015 then
+					task.wait()
+					start = os.clock()
+				end
 				local obj = insts[i]
-				local par = nodes[ffa(obj,"Instance")]
+				local parentObj = obj.Parent
+				local par = nodes[parentObj]
 				if not par then continue end
 				local newNode = {
 					Obj = obj,
@@ -2697,10 +2704,15 @@ return search]==]
 				par[#par+1] = newNode
 			end
 		else
-			for i = 1,#insts do
+			for i = 1,count do
+				if i % 300 == 0 and os.clock() - start > 0.015 then
+					task.wait()
+					start = os.clock()
+				end
 				local obj = insts[i]
-				local s,parObj = pcall(ffa,obj,"Instance")
-				local par = nodes[parObj]
+				local s,parentObj = pcall(function() return obj.Parent end)
+				if not s or not parentObj then continue end
+				local par = nodes[parentObj]
 				if not par then continue end
 				local newNode = {
 					Obj = obj,

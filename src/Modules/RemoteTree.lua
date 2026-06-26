@@ -971,8 +971,6 @@ local function main()
 			OnResize = function() if RemoteTree.Active then RemoteTree.UpdateView() RemoteTree.Refresh() end end,
 		})
 
-		RemoteTree.Build()
-		RemoteTree.Flatten()
 	end
 
 	return RemoteTree
