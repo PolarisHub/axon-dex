@@ -9,7 +9,7 @@ local cloneref = cloneref
 
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, ScriptViewer, Notebook -- Major Apps
+local Explorer, Properties, ScriptViewer, Notebook, FunctionDumper -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -32,6 +32,7 @@ local function initAfterMain()
 	Properties = Apps.Properties
 	ScriptViewer = Apps.ScriptViewer
 	Notebook = Apps.Notebook
+	FunctionDumper = Apps.FunctionDumper
 end
 
 local executorName = "Unknown"
@@ -62,6 +63,11 @@ local function main()
 	local PreviousScr = nil
 
 	ScriptViewer.DumpFunctions = function(scr)
+		if FunctionDumper then
+			FunctionDumper.Dump(scr)
+			return
+		end
+
 		-- thanks King.Kevin#6025 you'll obviously be credited (no discord tag since that can easily be impersonated)
 		local getgc = getgc or get_gc_objects
 		local getupvalues = (debug and debug.getupvalues) or getupvalues or getupvals
