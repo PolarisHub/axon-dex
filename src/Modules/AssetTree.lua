@@ -145,24 +145,34 @@ local function main()
 			scanData[cat.Key] = {}
 		end
 
-		local count = 0
-		for _, obj in ipairs(game:GetDescendants()) do
-			count = count + 1
-			if count % 500 == 0 then task.wait() end
+		local queue = {game}
+		local start = os.clock()
+		local getChildren = game.GetChildren
 
-			local urls = getAssetUrls(obj)
-			for _, url in ipairs(urls) do
-				if url then
-					local assetId = parseAssetId(url)
-					if assetId then
-						local catKey = determineCategory(obj)
-						local catAssets = scanData[catKey]
-						if not catAssets[assetId] then
-							catAssets[assetId] = { AssetId = assetId, Objects = {} }
+		while #queue > 0 do
+			local inst = table.remove(queue)
+			local ch = getChildren(inst)
+			for i = 1, #ch do
+				local obj = ch[i]
+				local urls = getAssetUrls(obj)
+				for _, url in ipairs(urls) do
+					if url then
+						local assetId = parseAssetId(url)
+						if assetId then
+							local catKey = determineCategory(obj)
+							local catAssets = scanData[catKey]
+							if not catAssets[assetId] then
+								catAssets[assetId] = { AssetId = assetId, Objects = {} }
+							end
+							table.insert(catAssets[assetId].Objects, obj)
 						end
-						table.insert(catAssets[assetId].Objects, obj)
 					end
 				end
+				table.insert(queue, obj)
+			end
+			if os.clock() - start > 0.002 then
+				task.wait()
+				start = os.clock()
 			end
 		end
 	end

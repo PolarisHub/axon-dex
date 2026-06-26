@@ -58,7 +58,7 @@ local function main()
 	local rootNode
 	local expandedByObj = setmetatable({}, {__mode = "k"})
 	local selectedNode
-	local refreshDebounce, rebuildDebounce
+	local refreshDebounce, rebuildDebounce, scanningFlag
 	local isa = game.IsA
 
 	RemoteTree.Index = 0
@@ -90,15 +90,22 @@ local function main()
 
 		local remotes = {}
 		local getChildren = game.GetChildren
-		local function scan(inst)
+		local queue = {game}
+		local start = os.clock()
+
+		while #queue > 0 do
+			local inst = table.remove(queue)
 			local ch = getChildren(inst)
 			for i = 1, #ch do
 				local c = ch[i]
 				if isRemote(c) then remotes[#remotes + 1] = c end
-				scan(c)
+				table.insert(queue, c)
+			end
+			if os.clock() - start > 0.002 then
+				task.wait()
+				start = os.clock()
 			end
 		end
-		local ok = pcall(scan, game)
 
 		local function getNode(inst)
 			local n = nodeMap[inst]
@@ -110,7 +117,13 @@ local function main()
 			pnode.Children[#pnode.Children + 1] = n
 			return n
 		end
+
+		start = os.clock()
 		for i = 1, #remotes do
+			if i % 100 == 0 and os.clock() - start > 0.002 then
+				task.wait()
+				start = os.clock()
+			end
 			pcall(getNode, remotes[i])
 		end
 
@@ -395,10 +408,16 @@ local function main()
 	end
 
 	RemoteTree.Rebuild = function()
-		RemoteTree.Build()
-		RemoteTree.Flatten()
-		RemoteTree.UpdateView()
-		RemoteTree.Refresh()
+		if scanningFlag then return end
+		scanningFlag = true
+		if countLabel then countLabel.Text = "Scanning..." end
+		coroutine.wrap(function()
+			RemoteTree.Build()
+			RemoteTree.Flatten()
+			RemoteTree.UpdateView()
+			RemoteTree.Refresh()
+			scanningFlag = false
+		end)()
 	end
 
 	RemoteTree.PerformRebuild = function()

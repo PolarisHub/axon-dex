@@ -58,7 +58,7 @@ local function main()
 	local rootNode             -- the game node (depth 0)
 	local expandedByObj = setmetatable({}, {__mode = "k"}) -- persists expand state across rebuilds
 	local selectedNode
-	local refreshDebounce, rebuildDebounce
+	local refreshDebounce, rebuildDebounce, scanningFlag
 	local isa = game.IsA
 
 	ScriptTree.Index = 0
@@ -76,16 +76,22 @@ local function main()
 
 		local scripts = {}
 		local getChildren = game.GetChildren
-		local function scan(inst)
+		local queue = {game}
+		local start = os.clock()
+
+		while #queue > 0 do
+			local inst = table.remove(queue)
 			local ch = getChildren(inst)
 			for i = 1, #ch do
 				local c = ch[i]
 				if isa(c, "LuaSourceContainer") then scripts[#scripts + 1] = c end
-				scan(c)
+				table.insert(queue, c)
+			end
+			if os.clock() - start > 0.002 then
+				task.wait()
+				start = os.clock()
 			end
 		end
-		local ok = pcall(scan, game)
-		if not ok then end -- partial scan is fine
 
 		-- Build the ancestor chain only along paths that contain scripts.
 		local function getNode(inst)
@@ -98,7 +104,13 @@ local function main()
 			pnode.Children[#pnode.Children + 1] = n
 			return n
 		end
+
+		start = os.clock()
 		for i = 1, #scripts do
+			if i % 100 == 0 and os.clock() - start > 0.002 then
+				task.wait()
+				start = os.clock()
+			end
 			pcall(getNode, scripts[i])
 		end
 
@@ -394,10 +406,16 @@ local function main()
 	end
 
 	ScriptTree.Rebuild = function()
-		ScriptTree.Build()
-		ScriptTree.Flatten()
-		ScriptTree.UpdateView()
-		ScriptTree.Refresh()
+		if scanningFlag then return end
+		scanningFlag = true
+		if countLabel then countLabel.Text = "Scanning..." end
+		coroutine.wrap(function()
+			ScriptTree.Build()
+			ScriptTree.Flatten()
+			ScriptTree.UpdateView()
+			ScriptTree.Refresh()
+			scanningFlag = false
+		end)()
 	end
 
 	ScriptTree.PerformRebuild = function()
