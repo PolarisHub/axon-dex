@@ -475,6 +475,10 @@ local function main()
 			AssetTree.Refresh()
 		end)
 
+		if clickSys then
+			clickSys:Add(entryGui)
+		end
+
 		entryGui.Parent = treeFrame
 		return entry
 	end
@@ -526,7 +530,6 @@ local function main()
 			if not entry then
 				entry = AssetTree.NewEntry(i)
 				listEntries[i] = entry
-				clickSys:Add(entry.Gui)
 			end
 
 			local node = tree[i + AssetTree.Index]
