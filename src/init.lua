@@ -58,10 +58,14 @@ selection = selection or nil
 local genv = (getgenv and getgenv()) or _G
 local Axon = genv.Axon or {}
 
+local function devlog(...)
+	if Axon.DevMode then print("[Axon]", ...) end
+end
+
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, ScriptTree, DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -200,7 +204,7 @@ end
 Main = (function()
 	local Main = {}
 
-	Main.ModuleList = {"Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow"}
+	Main.ModuleList = {"Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","ScriptTree"}
 	Main.Elevated = false
 	Main.AllowDraggableOnMobile = true
 	Main.MissingEnv = {}
@@ -299,7 +303,14 @@ Main = (function()
 		Main.AppControls[name] = control
 		control.InitDeps(Main.GetInitDeps())
 
-		local moduleData = control.Main()
+		local ok, moduleData = xpcall(control.Main, function(e)
+			return tostring(e) .. "\n" .. debug.traceback()
+		end)
+		if not ok then
+			warn(("[Axon] %s.Main() errored:\n%s"):format(name, tostring(moduleData)))
+			Main.Error(("Module '%s' failed: %s"):format(name, tostring(moduleData)))
+		end
+		devlog("module ready:", name)
 		Apps[name] = moduleData
 		return moduleData
 	end
@@ -343,6 +354,7 @@ Main = (function()
 		ModelViewer = Apps.ModelViewer
 		Notebook = Apps.Notebook
 		SettingsWindow = Apps.SettingsWindow
+		ScriptTree = Apps.ScriptTree
 
 		local appTable = {
 			Explorer = Explorer,
@@ -352,7 +364,8 @@ Main = (function()
 			SaveInstance = SaveInstance,
 			ModelViewer = ModelViewer,
 			Notebook = Notebook,
-			SettingsWindow = SettingsWindow
+			SettingsWindow = SettingsWindow,
+			ScriptTree = ScriptTree
 		}
 
 		Main.AppControls.Lib.InitAfterMain(appTable)
@@ -1288,6 +1301,8 @@ Main = (function()
 
 		Main.CreateApp({Name = "Properties", IconMap = Main.LargeIcons, Icon = "Properties", Open = true, Window = Properties.Window})
 
+		Main.CreateApp({Name = "Script Tree", IconMap = Main.LargeIcons, Icon = "Script_Viewer", Window = ScriptTree.Window})
+
 		local cptsOnMouseClick = nil
 		Main.CreateApp({Name = "Click part to select", IconMap = Explorer.ClassIcons, Icon = "SelectionBox", OnClick = function(callback)
 			if callback then
@@ -1427,6 +1442,7 @@ Main = (function()
 		Explorer.Init()
 		Properties.Init()
 		ScriptViewer.Init()
+		ScriptTree.Init()
 		Console.Init()
 		SaveInstance.Init()
 		ModelViewer.Init()
@@ -1493,4 +1509,10 @@ Main = (function()
 end)()
 
 -- Start
-Main.Init()
+local ok, err = xpcall(Main.Init, function(e)
+	return tostring(e) .. "\n" .. debug.traceback()
+end)
+if not ok then
+	warn("[Axon] FATAL during Main.Init:\n" .. tostring(err))
+	error(err, 0)
+end

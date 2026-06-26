@@ -50,6 +50,15 @@ end
 
 local cache = {}
 
+-- Dev logging: prints to the executor/F9 console so a frozen load reveals
+-- exactly which file failed, its byte length (catches truncated HttpGet on
+-- big files), and a real traceback instead of a silent freeze.
+local function log(...)
+	if Config.DevMode then
+		print("[Axon]", ...)
+	end
+end
+
 -- import("src/Modules/Lib") -> fetches BaseUrl .. "src/Modules/Lib.lua",
 -- compiles it, runs it once, and memoises the return value.
 local function import(path)
@@ -62,17 +71,28 @@ local function import(path)
 		url = url .. "?cb=" .. tostring(tick())
 	end
 
+	log("fetch  →", path)
 	local source = httpGet(url)
 	if type(source) ~= "string" or #source == 0 then
-		error(("Axon: failed to download '%s'"):format(path), 0)
+		error(("Axon: failed to download '%s' (empty response)"):format(path), 0)
 	end
+	log(("fetched   %s  (%d bytes)"):format(path, #source))
 
 	local chunk, err = loadstring(source, "=" .. path)
 	if not chunk then
+		warn(("[Axon] COMPILE ERROR in %s:\n%s"):format(path, tostring(err)))
 		error(("Axon: failed to compile '%s': %s"):format(path, tostring(err)), 0)
 	end
 
-	local result = chunk()
+	local ok, result = xpcall(chunk, function(e)
+		return tostring(e) .. "\n" .. debug.traceback()
+	end)
+	if not ok then
+		warn(("[Axon] ERROR running %s:\n%s"):format(path, tostring(result)))
+		error(("Axon: error running '%s'"):format(path), 0)
+	end
+
+	log("loaded ✓ ", path)
 	cache[path] = result ~= nil and result or true
 	return cache[path]
 end
