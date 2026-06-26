@@ -1,23 +1,16 @@
 # Axon
-Made by axon (xenith_8)
-
-A remake of **Dex++** (by Chillz), itself a revival of **Moon's Dex v3** — a full
-in-game instance explorer, property editor, script viewer, console, save-instance
-tool and 3D viewer for Roblox.
-
-Axon keeps Dex++ feature-for-feature but reorganises the original single ~9k-line
-script into a clean, multi-file codebase that still loads from a **single
-`loadstring`**, Hydroxide-style: the loader fetches each module from GitHub at
-runtime.
-
-## Usage
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/PolarisHub/axon-dex/main/loader.lua"))()
 ```
 
-That's it. [`loader.lua`](loader.lua) installs a tiny module loader and pulls the
-rest of the source (`src/init.lua` + `src/Modules/*.lua`) over HTTP.
+Made by axon (xenith_8).
+
+A remake of **Dex++** (by Chillz), itself a revival of **Moon's Dex v3** — a full in-game instance explorer, property editor, script viewer, console, save-instance tool and 3D viewer for Roblox.
+
+Axon keeps Dex++ feature-for-feature but reorganises the original single ~9k-line script into a clean, multi-file codebase that still loads from a **single `loadstring`**, Hydroxide-style: the loader fetches each module from GitHub at runtime.
+
+[`loader.lua`](loader.lua) installs a tiny module loader and pulls the rest of the source (`src/init.lua` + `src/Modules/*.lua`) over HTTP.
 
 ## Project structure
 
