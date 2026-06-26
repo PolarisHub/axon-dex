@@ -957,7 +957,7 @@ Main = (function()
 
 	Main.CreateIntro = function(initStatus)
 		local gui = create({
-			{1,"ScreenGui",{Name="Intro",}},
+			{1,"ScreenGui",{Name="Intro",ZIndexBehavior=1,}},
 			{2,"Frame",{Active=true,BackgroundColor3=Settings.Theme.Main2,BorderSizePixel=0,Name="Main",Parent={1},Position=UDim2.new(0.5,-175,0.5,-100),Size=UDim2.new(0,350,0,200),}},
 			{3,"Frame",{BackgroundColor3=Settings.Theme.Main1,BorderSizePixel=0,ClipsDescendants=true,Name="Holder",Parent={2},Size=UDim2.new(1,0,1,0),}},
 			{4,"UIGradient",{Parent={3},Rotation=30,Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1,0),NumberSequenceKeypoint.new(1,1,0),}),}},
@@ -1223,7 +1223,7 @@ Main = (function()
 
 	Main.CreateMainGui = function()
 		local gui = create({
-			{1,"ScreenGui",{IgnoreGuiInset=true,Name="MainMenu",}},
+			{1,"ScreenGui",{IgnoreGuiInset=true,Name="MainMenu",ZIndexBehavior=1,}},
 			{2,"TextButton",{AnchorPoint=Vector2.new(0.5,0),AutoButtonColor=false,BackgroundColor3=Settings.Theme.Main2,BorderSizePixel=0,Font=4,Name="OpenButton",Parent={1},Position=UDim2.new(0.5,0,0,2),Size=UDim2.new(0,55,0,32),Text="Axon",TextColor3=Settings.Theme.Text,TextSize=16,TextTransparency=0.20000000298023,}},
 			{3,"UICorner",{CornerRadius=UDim.new(0,4),Parent={2},}},
 			{4,"Frame",{AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Settings.Theme.Main1,BackgroundTransparency=Settings.Window.Transparency,ClipsDescendants=true,Name="MainFrame",Parent={2},Position=UDim2.new(0.5,0,1,-4),Size=UDim2.new(0,224,0,200),}},
