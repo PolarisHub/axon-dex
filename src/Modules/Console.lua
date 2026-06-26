@@ -152,6 +152,7 @@ local function main()
 	G2L["backgroundOutput"] = Instance.new("Frame", ConsoleFrame);
 	G2L["backgroundOutput"]["BorderSizePixel"] = 0;
 	G2L["backgroundOutput"]["BackgroundColor3"] = Color3.fromRGB(36, 36, 36);
+	G2L["backgroundOutput"]["BackgroundTransparency"] = 1;
 	G2L["backgroundOutput"]["Name"] = [[BackgroundOutput]];
 	G2L["backgroundOutput"]["AnchorPoint"] = Vector2.new(0, 0);
 	G2L["backgroundOutput"]["Size"] = UDim2.new(1, -8, 1, -55);

@@ -98,21 +98,21 @@ DefaultSettings = (function()
 		},
 		Theme = {
 			_Recurse = true,
-			Main1 = rgb(15,23,35),
-			Main2 = rgb(25,35,50),
-			Outline1 = rgb(25,35,50), -- Mainly frames
-			Outline2 = rgb(45,55,70), -- Mainly button
-			Outline3 = rgb(25,35,50), -- Mainly textbox
-			TextBox = rgb(25,35,50),
-			Menu = rgb(15,23,35),
-			ListSelection = rgb(80,150,255),
-			Button = rgb(25,35,50),
-			ButtonHover = rgb(35,47,65),
-			ButtonPress = rgb(20,28,40),
-			Highlight = rgb(45,212,240),
-			Text = rgb(220,230,245),
-			PlaceholderText = rgb(130,145,165),
-			Important = rgb(220,53,69),
+			Main1 = rgb(24,24,26),
+			Main2 = rgb(30,30,32),
+			Outline1 = rgb(38,38,40), -- Mainly frames
+			Outline2 = rgb(48,48,50), -- Mainly button
+			Outline3 = rgb(38,38,40), -- Mainly textbox
+			TextBox = rgb(18,18,20),
+			Menu = rgb(24,24,26),
+			ListSelection = rgb(45,45,48),
+			Button = rgb(30,30,32),
+			ButtonHover = rgb(38,38,40),
+			ButtonPress = rgb(18,18,20),
+			Highlight = rgb(86,173,244),
+			Text = rgb(240,240,240),
+			PlaceholderText = rgb(120,120,125),
+			Important = rgb(255,75,75),
 			ExplorerIconMap = "",
 			MiscIconMap = "",
 			Syntax = {
@@ -638,7 +638,8 @@ Main = (function()
 				if Settings.Theme and Settings.Theme.Main1 then
 					local m1 = Settings.Theme.Main1
 					if (math.abs(m1.R - 52/255) < 0.01 and math.abs(m1.G - 52/255) < 0.01 and math.abs(m1.B - 52/255) < 0.01) or
-					   (math.abs(m1.R - 18/255) < 0.01 and math.abs(m1.G - 18/255) < 0.01 and math.abs(m1.B - 20/255) < 0.01) then
+					   (math.abs(m1.R - 18/255) < 0.01 and math.abs(m1.G - 18/255) < 0.01 and math.abs(m1.B - 20/255) < 0.01) or
+					   (math.abs(m1.R - 15/255) < 0.01 and math.abs(m1.G - 23/255) < 0.01 and math.abs(m1.B - 35/255) < 0.01) then
 						Main.ResetSettings()
 						Main.SaveCurrentSettings()
 					end
@@ -963,7 +964,7 @@ Main = (function()
 			{12,"UIGradient",{Parent={11},Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1,0),NumberSequenceKeypoint.new(1,1,0),}),}},
 			{13,"TextLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Font=3,Name="Version",Parent={2},Position=UDim2.new(1,-110,1,-35),Size=UDim2.new(0,105,0,20),Text=Main.Version,TextColor3=Settings.Theme.Text,TextSize=14,TextXAlignment=1,}},
 			{14,"UIGradient",{Parent={13},Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1,0),NumberSequenceKeypoint.new(1,1,0),}),}},
-			{15,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderSizePixel=0,Image="rbxassetid://1427967925",Name="Outlines",Parent={2},Position=UDim2.new(0,-5,0,-5),ScaleType=1,Size=UDim2.new(1,10,1,10),SliceCenter=Rect.new(6,6,25,25),TileSize=UDim2.new(0,20,0,20),}},
+			{15,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderSizePixel=0,Image="rbxassetid://8992230677",ImageColor3=Color3.fromRGB(0,0,0),ImageTransparency=0,Name="Outlines",Parent={2},Position=UDim2.new(0,-5,0,-5),ScaleType=1,Size=UDim2.new(1,10,1,10),SliceCenter=Rect.new(25,25,25,25),TileSize=UDim2.new(0,20,0,20),}},
 			{16,"UIGradient",{Parent={15},Rotation=-30,Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1,0),NumberSequenceKeypoint.new(1,1,0),}),}},
 			{17,"UIGradient",{Parent={2},Rotation=-30,Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1,0),NumberSequenceKeypoint.new(1,1,0),}),}},
 			{18,"UIDragDetector", {Parent={2}}}
