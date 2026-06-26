@@ -64,6 +64,7 @@ local function main()
 	local scanThread
 	local currentScanId = 0
 	local targetScript
+	local resolvedNames = {}
 
 	-- Color theme for value types
 	local TYPE_COLORS = {
@@ -107,9 +108,75 @@ local function main()
 		elseif valType == "table" then
 			return "Table: " .. tostring(val)
 		elseif valType == "function" then
-			return "Function: " .. tostring(val)
+			local name = "anonymous"
+			local getinfo = (debug and (debug.getinfo or debug.info)) or getinfo
+			pcall(function()
+				local inf = getinfo(val)
+				name = inf.name ~= "" and inf.name or ("anonymous_line_%d"):format(inf.linedefined or 0)
+			end)
+			if resolvedNames[val] then
+				name = resolvedNames[val] .. " (" .. name .. ")"
+			end
+			return ("Function: %s (%s)"):format(name, tostring(val))
+		elseif valType == "userdata" or typeof(val) == "Instance" then
+			local str = tostring(val)
+			local name = str
+			pcall(function()
+				if typeof(val) == "Instance" then
+					name = val:GetFullName()
+				else
+					local mt = getmetatable(val)
+					if mt then
+						if mt.__type then
+							name = tostring(mt.__type) .. " (" .. str .. ")"
+						elseif mt.__tostring then
+							name = tostring(val)
+						end
+					end
+				end
+			end)
+			return name
 		else
 			return tostring(val)
+		end
+	end
+
+	local function getTableSummary(tbl)
+		local counts = {}
+		local total = 0
+		local success, err = pcall(function()
+			for k, v in next, tbl do
+				total = total + 1
+				if total > 200 then break end
+				local t = typeof(v)
+				counts[t] = (counts[t] or 0) + 1
+			end
+		end)
+		if not success or total == 0 then return "" end
+
+		local parts = {}
+		local order = {"function", "table", "number", "string", "boolean"}
+		for _, t in ipairs(order) do
+			if counts[t] and counts[t] > 0 then
+				local label = t
+				if t == "function" then label = "Func"
+				elseif t == "table" then label = "Table"
+				elseif t == "number" then label = "Num"
+				elseif t == "string" then label = "Str"
+				elseif t == "boolean" then label = "Bool"
+				end
+				parts[#parts + 1] = ("%d %s"):format(counts[t], label)
+				counts[t] = nil
+			end
+		end
+		for t, cnt in next, counts do
+			parts[#parts + 1] = ("%d %s"):format(cnt, t)
+		end
+
+		if #parts > 0 then
+			return " (" .. table.concat(parts, ", ") .. ")"
+		else
+			return " (empty)"
 		end
 	end
 
@@ -172,8 +239,12 @@ local function main()
 						-- retrieve local name if debug.info supports it
 						local info = getinfo(func)
 					end)
+					local upValText = ""
+					if vType == "table" then
+						upValText = getTableSummary(val)
+					end
 					local upNode = {
-						Name = ("[%d] %s"):format(idx, name),
+						Name = ("[%d] %s%s"):format(idx, name, upValText),
 						Type = "Upvalue",
 						Depth = depth + 1,
 						Expanded = false,
@@ -207,8 +278,12 @@ local function main()
 
 				for idx, val in next, consts do
 					local vType = typeof(val)
+					local conValText = ""
+					if vType == "table" then
+						conValText = getTableSummary(val)
+					end
 					local conNode = {
-						Name = ("[%d]"):format(idx),
+						Name = ("[%d]%s"):format(idx, conValText),
 						Type = "Constant",
 						Depth = depth + 1,
 						Expanded = false,
@@ -261,6 +336,54 @@ local function main()
 				node.Children[#node.Children + 1] = metaFolder
 			end
 
+			-- 4. Prototypes Folder
+			local protosList = {}
+			local getprotos = (debug and debug.getprotos) or getprotos
+			if getprotos then
+				local s4, protos = pcall(getprotos, func)
+				if s4 and protos and #protos > 0 then
+					local protosFolder = {
+						Name = "Prototypes (" .. #protos .. ")",
+						Type = "PrototypesFolder",
+						Depth = depth,
+						Expanded = expandedByPath[node.Path .. "/Prototypes"] or false,
+						Parent = node,
+						Children = {}
+					}
+					protosFolder.Path = node.Path .. "/Prototypes"
+
+					for idx, pFunc in next, protos do
+						local pName = resolvedNames[pFunc]
+						local rawName = "anonymous"
+						pcall(function()
+							local inf = getinfo(pFunc)
+							rawName = inf.name ~= "" and inf.name or ("anonymous_line_%d"):format(inf.linedefined or 0)
+						end)
+
+						if pName then
+							pName = ("%s (%s)"):format(pName, rawName)
+						else
+							pName = rawName
+						end
+
+						local pNode = {
+							Name = ("[%d] %s"):format(idx, pName),
+							Type = "Function",
+							Func = pFunc,
+							Depth = depth + 1,
+							Expanded = false,
+							Children = {},
+							ChildrenLoaded = false,
+							Parent = protosFolder
+						}
+						pNode.Path = protosFolder.Path .. "/" .. idx
+						protosList[#protosList + 1] = pNode
+					end
+					protosFolder.Children = protosList
+					node.Children[#node.Children + 1] = protosFolder
+				end
+			end
+
 		elseif node.Type == "Upvalue" or node.Type == "Constant" or node.Type == "TableValue" then
 			-- If it's a function, treat it like a function
 			if node.ValueType == "function" then
@@ -290,8 +413,12 @@ local function main()
 						break
 					end
 					local vType = typeof(v)
+					local tbValText = ""
+					if vType == "table" then
+						tbValText = getTableSummary(v)
+					end
 					local tbVal = {
-						Name = tostring(k) .. ":",
+						Name = tostring(k) .. ":" .. tbValText,
 						Type = "TableValue",
 						Depth = depth,
 						Expanded = false,
@@ -634,7 +761,7 @@ local function main()
 				entry.Icon.Position = UDim2.new(0, depth * INDENT + ICON_OFF, 0, 2)
 				local iconKey = "Empty"
 				if node.Type == "Function" then iconKey = "ViewScript"
-				elseif node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "MetadataFolder" then iconKey = "Group"
+				elseif node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "MetadataFolder" or node.Type == "PrototypesFolder" then iconKey = "Group"
 				elseif node.Type == "Upvalue" then iconKey = "Reference"
 				elseif node.Type == "Constant" then iconKey = "SelectChildren"
 				elseif node.Type == "Metadata" then iconKey = "ExploreData"
@@ -700,14 +827,18 @@ local function main()
 		if not selectedNode then return end
 		context:Clear()
 
-		local isEditable = selectedNode.Type == "Upvalue" and (selectedNode.ValueType == "number" or selectedNode.ValueType == "boolean" or selectedNode.ValueType == "string" or selectedNode.ValueType == "Vector3" or selectedNode.ValueType == "Color3")
+		local isEditable = (selectedNode.Type == "Upvalue" or selectedNode.Type == "Constant" or selectedNode.Type == "TableValue") and (selectedNode.ValueType == "number" or selectedNode.ValueType == "boolean" or selectedNode.ValueType == "string" or selectedNode.ValueType == "Vector3" or selectedNode.ValueType == "Color3")
 		if isEditable then
+			local labelName = "Edit Value"
+			if selectedNode.Type == "Upvalue" then labelName = "Edit Upvalue"
+			elseif selectedNode.Type == "Constant" then labelName = "Edit Constant"
+			elseif selectedNode.Type == "TableValue" then labelName = "Edit Table Member"
+			end
 			context:Add({
-				Name = "Edit Upvalue",
+				Name = labelName,
 				IconMap = Main.MiscIcons,
 				Icon = "Rename",
 				OnClick = function()
-					-- Find index
 					local idx = table.find(tree, selectedNode)
 					if idx then
 						FunctionDumper.SetEditingNode(selectedNode, idx - FunctionDumper.Index)
@@ -743,12 +874,23 @@ local function main()
 		end
 		if fNode and fNode.Func then
 			context:Add({
+				Name = "Decompile Script",
+				IconMap = Main.MiscIcons,
+				Icon = "ViewScript",
+				OnClick = function()
+					if targetScript then
+						ScriptViewer.ViewScript(targetScript)
+					end
+				end
+			})
+			context:Add({
 				Name = "Go to Script",
 				IconMap = Main.MiscIcons,
 				Icon = "JumpToParent",
 				OnClick = function()
-					if targetScript then
-						ScriptViewer.ViewScript(targetScript)
+					if targetScript and nodes[targetScript] then
+						selection:Set(nodes[targetScript])
+						Explorer.ViewNode(nodes[targetScript])
 					end
 				end
 			})
@@ -773,7 +915,7 @@ local function main()
 
 			-- Double click to edit or expand
 			if button == 1 and combo == 2 then
-				local isEditable = node.Type == "Upvalue" and (node.ValueType == "number" or node.ValueType == "boolean" or node.ValueType == "string" or node.ValueType == "Vector3" or node.ValueType == "Color3")
+				local isEditable = (node.Type == "Upvalue" or node.Type == "Constant" or node.Type == "TableValue") and (node.ValueType == "number" or node.ValueType == "boolean" or node.ValueType == "string" or node.ValueType == "Vector3" or node.ValueType == "Color3")
 				if isEditable then
 					FunctionDumper.SetEditingNode(node, ind)
 				else
@@ -851,13 +993,50 @@ local function main()
 						fNode = fNode.Parent
 					end
 					if fNode and fNode.Func then
-						local success, err = pcall(function()
-							debug.setupvalue(fNode.Func, editingNode.Index, newValue)
-						end)
+						local success, err
+						if editingNode.Type == "Upvalue" then
+							success, err = pcall(function()
+								debug.setupvalue(fNode.Func, editingNode.Index, newValue)
+							end)
+						elseif editingNode.Type == "Constant" then
+							local setconstant = (debug and debug.setconstant) or setconstant or setconst
+							if setconstant then
+								success, err = pcall(setconstant, fNode.Func, editingNode.Index, newValue)
+							else
+								success, err = false, "debug.setconstant is not supported by your executor"
+							end
+						elseif editingNode.Type == "TableValue" then
+							local pathKeys = {}
+							local curr = editingNode
+							while curr and curr.Type == "TableValue" do
+								table.insert(pathKeys, 1, curr.Key)
+								curr = curr.Parent
+							end
+							if curr and type(curr.Value) == "table" then
+								local targetTbl = curr.Value
+								for i = 1, #pathKeys - 1 do
+									targetTbl = targetTbl[pathKeys[i]]
+									if type(targetTbl) ~= "table" then
+										targetTbl = nil
+										break
+									end
+								end
+								if targetTbl then
+									local lastKey = pathKeys[#pathKeys]
+									targetTbl[lastKey] = newValue
+									success = true
+								else
+									success, err = false, "could not trace parent table path"
+								end
+							else
+								success, err = false, "root node is not a table"
+							end
+						end
+
 						if success then
 							editingNode.Value = newValue
 						else
-							warn("[Axon Dumper] Failed to modify upvalue: " .. tostring(err))
+							warn("[Axon Dumper] Failed to modify: " .. tostring(err))
 						end
 					end
 				end
@@ -889,6 +1068,7 @@ local function main()
 
 		statusLabel.Text = "Scanning GC..."
 		table.clear(allFunctions)
+		table.clear(resolvedNames)
 		tree = {}
 		FunctionDumper.Flatten()
 		FunctionDumper.UpdateView()
@@ -898,37 +1078,117 @@ local function main()
 			local gc = env.getgc()
 			local start = tick()
 			local getinfo = (debug and (debug.getinfo or debug.info)) or getinfo
+			local getupvalues = (debug and debug.getupvalues) or getupvalues or getupvals
+			local getprotos = (debug and debug.getprotos) or getprotos
 
+			-- Pre-scan name resolution mapping
+			local function scanFuncNames(f)
+				if myScanId ~= currentScanId then return end
+				-- Walk upvalues
+				local s, ups = pcall(getupvalues, f)
+				if s and ups then
+					for k, v in next, ups do
+						if typeof(v) == "function" then
+							if not resolvedNames[v] then
+								local name = "upval_" .. tostring(k)
+								pcall(function()
+									-- Try to get real variable name of upvalue if getinfo provides it
+									local inf = getinfo(f)
+								end)
+								resolvedNames[v] = name
+								scanFuncNames(v)
+							end
+						elseif typeof(v) == "table" then
+							local count = 0
+							for tk, tv in next, v do
+								count = count + 1
+								if count > 50 then break end
+								if typeof(tv) == "function" then
+									if not resolvedNames[tv] then
+										resolvedNames[tv] = tostring(tk)
+										scanFuncNames(tv)
+									end
+								end
+							end
+						end
+					end
+				end
+				-- Walk protos
+				if getprotos then
+					local s2, pts = pcall(getprotos, f)
+					if s2 and pts then
+						for idx, pf in next, pts do
+							if not resolvedNames[pf] then
+								local pName = "proto_" .. idx
+								resolvedNames[pf] = pName
+								scanFuncNames(pf)
+							end
+						end
+					end
+				end
+			end
+
+			-- Find functions belonging to script first
+			local scriptFuncs = {}
 			for i = 1, #gc do
 				if myScanId ~= currentScanId then return end
-
 				local val = gc[i]
 				if typeof(val) == "function" then
 					local s, envTable = pcall(getfenv, val)
 					if s and envTable.script == scr then
-						local name = "anonymous"
-						pcall(function()
-							local inf = getinfo(val)
-							name = inf.name ~= "" and inf.name or ("anonymous_line_%d"):format(inf.linedefined or 0)
-						end)
-
-						local funcNode = {
-							Name = name,
-							Type = "Function",
-							Func = val,
-							Depth = 0,
-							Expanded = false,
-							Children = {},
-							ChildrenLoaded = false,
-							Parent = nil,
-						}
-						funcNode.Path = name .. "_" .. tostring(#allFunctions + 1)
-						allFunctions[#allFunctions + 1] = funcNode
+						scriptFuncs[#scriptFuncs + 1] = val
 					end
 				end
 
 				if tick() - start > 0.015 then
-					statusLabel.Text = ("Scanning GC... %d%%"):format(math.floor((i / #gc) * 100))
+					statusLabel.Text = ("Pre-scanning GC... %d%%"):format(math.floor((i / #gc) * 50))
+					task.wait()
+					start = tick()
+				end
+			end
+
+			-- Resolve names
+			for i = 1, #scriptFuncs do
+				if myScanId ~= currentScanId then return end
+				scanFuncNames(scriptFuncs[i])
+				if tick() - start > 0.015 then
+					statusLabel.Text = ("Resolving names... %d%%"):format(math.floor((i / #scriptFuncs) * 30) + 50)
+					task.wait()
+					start = tick()
+				end
+			end
+
+			-- Build tree nodes
+			for i = 1, #scriptFuncs do
+				if myScanId ~= currentScanId then return end
+				local val = scriptFuncs[i]
+				local pName = resolvedNames[val]
+				local rawName = "anonymous"
+				pcall(function()
+					local inf = getinfo(val)
+					rawName = inf.name ~= "" and inf.name or ("anonymous_line_%d"):format(inf.linedefined or 0)
+				end)
+
+				local name = rawName
+				if pName then
+					name = ("%s (%s)"):format(pName, rawName)
+				end
+
+				local funcNode = {
+					Name = name,
+					Type = "Function",
+					Func = val,
+					Depth = 0,
+					Expanded = false,
+					Children = {},
+					ChildrenLoaded = false,
+					Parent = nil,
+				}
+				funcNode.Path = name .. "_" .. tostring(#allFunctions + 1)
+				allFunctions[#allFunctions + 1] = funcNode
+
+				if tick() - start > 0.015 then
+					statusLabel.Text = ("Populating Tree... %d%%"):format(math.floor((i / #scriptFuncs) * 20) + 80)
 					task.wait()
 					start = tick()
 				end
