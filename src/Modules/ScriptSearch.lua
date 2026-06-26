@@ -205,6 +205,10 @@ local function main()
 		scrollV.Index = 0
 		ScriptSearch.Refresh()
 
+		if listFrame then
+			Lib.ShowLoading(listFrame, "Searching scripts...")
+		end
+
 		statusLabel.Text = "Collecting scripts..."
 		searchBtn.Visible = false
 		stopBtn.Visible = true
@@ -227,7 +231,7 @@ local function main()
 					table.insert(queue, c)
 				end
 			end
-			if os.clock() - start > 0.002 then
+			if os.clock() - start > 0.015 then
 				task.wait()
 				start = os.clock()
 			end
@@ -238,6 +242,7 @@ local function main()
 		scanThread = coroutine.create(function()
 			local lq = query:lower()
 			local scanned = 0
+			local grepStart = os.clock()
 			for idx = 1, #scripts do
 				local scr = scripts[idx]
 				scanned = scanned + 1
@@ -262,13 +267,19 @@ local function main()
 					end
 				end
 
-				task.wait()
+				if os.clock() - grepStart > 0.015 then
+					task.wait()
+					grepStart = os.clock()
+				end
 			end
 
 			statusLabel.Text = ("Search complete: %d matches"):format(#results)
 			searchBtn.Visible = true
 			stopBtn.Visible = false
 			scanThread = nil
+			if listFrame then
+				Lib.HideLoading(listFrame)
+			end
 		end)
 		coroutine.resume(scanThread)
 	end
@@ -281,6 +292,9 @@ local function main()
 		statusLabel.Text = "Search stopped."
 		searchBtn.Visible = true
 		stopBtn.Visible = false
+		if listFrame then
+			Lib.HideLoading(listFrame)
+		end
 	end
 
 	ScriptSearch.InitClickSystem = function()

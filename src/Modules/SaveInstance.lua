@@ -279,16 +279,19 @@ local function main()
 		Button.MouseButton1Click:Connect(function()
 			local fileName = FilenameTextBox.TextBox.Text:gsub("{TIMESTAMP}", os.date("%d-%m-%Y_%H-%M-%S"))
 			window:SetTitle("Save Instance - Saving")
-			local s, result = pcall(env.saveinstance, game, fileName, SaveInstanceArgs)
-			if s then
-				window:SetTitle("Save Instance - Saved")
-			else
-				window:SetTitle("Save Instance - Error")
-				task.spawn(error("Failed to save the game: "..result))
-			end
-			task.wait(5)
-			window:SetTitle("Save Instance")
-			---env.saveinstance(game, fileName, SaveInstanceArgs)
+			Lib.ShowLoading(window.GuiElems.Content, "Saving Instance...")
+			task.spawn(function()
+				local s, result = pcall(env.saveinstance, game, fileName, SaveInstanceArgs)
+				Lib.HideLoading(window.GuiElems.Content)
+				if s then
+					window:SetTitle("Save Instance - Saved")
+				else
+					window:SetTitle("Save Instance - Error")
+					task.spawn(error("Failed to save the game: "..result))
+				end
+				task.wait(5)
+				window:SetTitle("Save Instance")
+			end)
 		end)
 	end
 

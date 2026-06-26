@@ -2683,45 +2683,56 @@ return search]==]
 
 		Explorer.SetupConnections()
 
-		local insts = getDescendants(game)
-		local count = #insts
-		local start = os.clock()
-		if Main.Elevated then
-			for i = 1,count do
-				if i % 1000 == 0 and os.clock() - start > 0.015 then
-					task.wait()
-					start = os.clock()
+		task.spawn(function()
+			Lib.ShowLoading(expPage, "Scanning workspace...")
+			local insts = getDescendants(game)
+			local count = #insts
+			local start = os.clock()
+			if Main.Elevated then
+				for i = 1,count do
+					if i % 1000 == 0 and os.clock() - start > 0.015 then
+						task.wait()
+						start = os.clock()
+					end
+					local obj = insts[i]
+					if nodes[obj] then continue end
+					local parentObj = obj.Parent
+					local par = nodes[parentObj]
+					if not par then continue end
+					local newNode = {
+						Obj = obj,
+						Parent = par,
+					}
+					nodes[obj] = newNode
+					par[#par+1] = newNode
 				end
-				local obj = insts[i]
-				local parentObj = obj.Parent
-				local par = nodes[parentObj]
-				if not par then continue end
-				local newNode = {
-					Obj = obj,
-					Parent = par,
-				}
-				nodes[obj] = newNode
-				par[#par+1] = newNode
-			end
-		else
-			for i = 1,count do
-				if i % 300 == 0 and os.clock() - start > 0.015 then
-					task.wait()
-					start = os.clock()
+			else
+				for i = 1,count do
+					if i % 300 == 0 and os.clock() - start > 0.015 then
+						task.wait()
+						start = os.clock()
+					end
+					local obj = insts[i]
+					if nodes[obj] then continue end
+					local s,parentObj = pcall(function() return obj.Parent end)
+					if not s or not parentObj then continue end
+					local par = nodes[parentObj]
+					if not par then continue end
+					local newNode = {
+						Obj = obj,
+						Parent = par,
+					}
+					nodes[obj] = newNode
+					par[#par+1] = newNode
 				end
-				local obj = insts[i]
-				local s,parentObj = pcall(function() return obj.Parent end)
-				if not s or not parentObj then continue end
-				local par = nodes[parentObj]
-				if not par then continue end
-				local newNode = {
-					Obj = obj,
-					Parent = par,
-				}
-				nodes[obj] = newNode
-				par[#par+1] = newNode
 			end
-		end
+			Lib.HideLoading(expPage)
+			if Explorer.Active then
+				Explorer.UpdateView()
+				Explorer.Update()
+				Explorer.Refresh()
+			end
+		end)
 	end
 
 	return Explorer

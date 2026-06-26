@@ -151,7 +151,7 @@ local function main()
 				connectNameListener(childNode)
 			end
 
-			if os.clock() - start > 0.002 then
+			if os.clock() - start > 0.015 then
 				task.wait()
 				start = os.clock()
 			end
@@ -305,6 +305,9 @@ local function main()
 		currentSearchId = currentSearchId + 1
 		local mySearchId = currentSearchId
 
+		local page = RemoteTree.Page
+		if page then Lib.ShowLoading(page, "Searching remotes...") end
+
 		table.clear(nodeMap)
 		rootNode = {Obj = game, Children = {}, IsRemote = false, Parent = nil, Depth = 0, Expanded = true}
 		nodeMap[game] = rootNode
@@ -364,7 +367,7 @@ local function main()
 					end
 				end
 
-				if os.clock() - start > 0.002 then
+				if os.clock() - start > 0.015 then
 					task.wait()
 					start = os.clock()
 				end
@@ -390,6 +393,7 @@ local function main()
 					countLabel.Text = matchCount .. (matchCount == 1 and " match" or " matches")
 				end
 				RemoteTree.RemoteCount = matchCount
+				if page then Lib.HideLoading(page) end
 			end
 		end)()
 	end
@@ -646,11 +650,14 @@ local function main()
 		if scanningFlag then return end
 		scanningFlag = true
 		if countLabel then countLabel.Text = "Scanning..." end
+		local page = RemoteTree.Page
+		if page then Lib.ShowLoading(page, "Building Remote Tree...") end
 		coroutine.wrap(function()
 			RemoteTree.Build()
 			RemoteTree.Flatten()
 			RemoteTree.UpdateView()
 			RemoteTree.Refresh()
+			if page then Lib.HideLoading(page) end
 			scanningFlag = false
 		end)()
 	end
@@ -863,10 +870,15 @@ local function main()
 				startSearch(q)
 			else
 				currentSearchId = currentSearchId + 1
-				RemoteTree.Build()
-				RemoteTree.Flatten()
-				RemoteTree.UpdateView()
-				RemoteTree.Refresh()
+				local page = RemoteTree.Page
+				if page then Lib.ShowLoading(page, "Restoring tree...") end
+				coroutine.wrap(function()
+					RemoteTree.Build()
+					RemoteTree.Flatten()
+					RemoteTree.UpdateView()
+					RemoteTree.Refresh()
+					if page then Lib.HideLoading(page) end
+				end)()
 			end
 		end)
 	end

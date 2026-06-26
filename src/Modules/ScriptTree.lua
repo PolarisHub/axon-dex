@@ -129,7 +129,7 @@ local function main()
 				connectNameListener(childNode)
 			end
 
-			if os.clock() - start > 0.002 then
+			if os.clock() - start > 0.015 then
 				task.wait()
 				start = os.clock()
 			end
@@ -283,6 +283,9 @@ local function main()
 		currentSearchId = currentSearchId + 1
 		local mySearchId = currentSearchId
 
+		local page = ScriptTree.Page
+		if page then Lib.ShowLoading(page, "Searching scripts...") end
+
 		table.clear(nodeMap)
 		rootNode = {Obj = game, Children = {}, IsScript = false, Parent = nil, Depth = 0, Expanded = true}
 		nodeMap[game] = rootNode
@@ -342,7 +345,7 @@ local function main()
 					end
 				end
 
-				if os.clock() - start > 0.002 then
+				if os.clock() - start > 0.015 then
 					task.wait()
 					start = os.clock()
 				end
@@ -368,6 +371,7 @@ local function main()
 					countLabel.Text = matchCount .. (matchCount == 1 and " match" or " matches")
 				end
 				ScriptTree.ScriptCount = matchCount
+				if page then Lib.HideLoading(page) end
 			end
 		end)()
 	end
@@ -629,11 +633,14 @@ local function main()
 		if scanningFlag then return end
 		scanningFlag = true
 		if countLabel then countLabel.Text = "Scanning..." end
+		local page = ScriptTree.Page
+		if page then Lib.ShowLoading(page, "Building Script Tree...") end
 		coroutine.wrap(function()
 			ScriptTree.Build()
 			ScriptTree.Flatten()
 			ScriptTree.UpdateView()
 			ScriptTree.Refresh()
+			if page then Lib.HideLoading(page) end
 			scanningFlag = false
 		end)()
 	end
@@ -795,10 +802,15 @@ local function main()
 				startSearch(q)
 			else
 				currentSearchId = currentSearchId + 1
-				ScriptTree.Build()
-				ScriptTree.Flatten()
-				ScriptTree.UpdateView()
-				ScriptTree.Refresh()
+				local page = ScriptTree.Page
+				if page then Lib.ShowLoading(page, "Restoring tree...") end
+				coroutine.wrap(function()
+					ScriptTree.Build()
+					ScriptTree.Flatten()
+					ScriptTree.UpdateView()
+					ScriptTree.Refresh()
+					if page then Lib.HideLoading(page) end
+				end)()
 			end
 		end)
 	end

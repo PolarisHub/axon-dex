@@ -179,11 +179,15 @@ local function main()
 	local function startBackgroundScan()
 		if bgScanRunning then return end
 		bgScanRunning = true
+		local page = AssetTree.Page
+		if page then Lib.ShowLoading(page, "Scanning assets...") end
 		coroutine.wrap(function()
 			local head = 1
+			local start = os.clock()
 			while head <= #scanQueue do
 				if not AssetTree.Active then
 					bgScanRunning = false
+					if page then Lib.HideLoading(page) end
 					return
 				end
 
@@ -198,15 +202,17 @@ local function main()
 				end
 
 				totalScannedCount = totalScannedCount + 1
-				if totalScannedCount % 50 == 0 then
+				if os.clock() - start > 0.015 then
 					task.wait()
-					if AssetTree.Active then
-						AssetTree.Flatten()
-						AssetTree.UpdateView()
-						AssetTree.Refresh()
-					end
+					start = os.clock()
 				end
 			end
+			if AssetTree.Active then
+				AssetTree.Flatten()
+				AssetTree.UpdateView()
+				AssetTree.Refresh()
+			end
+			if page then Lib.HideLoading(page) end
 			bgScanRunning = false
 		end)()
 	end

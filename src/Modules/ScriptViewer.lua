@@ -258,53 +258,57 @@ local function main()
 	end
 
 	ScriptViewer.ViewScript = function(scr, lineIndex)
-		local oldtick = tick()
-		local s,source = pcall(env.decompile or function() end,scr)
-
-		if not s or not source then
-			PreviousScr = nil
-			dumpbtn.TextColor3 = Color3.new(0.5,0.5,0.5)
-			source = "-- Unable to view source.\n"
-
-			if Settings.ScriptViewer.ShowMoreInfo then
-				source = source .. "-- Script Path: "..getPath(scr).."\n"
-				if (scr.ClassName == "Script" and (scr.RunContext == Enum.RunContext.Legacy or scr.RunContext == Enum.RunContext.Server)) or not scr:IsA("LocalScript") then
-					source = source .. "-- Reason: The script is not running on client. (attempt to decompile ServerScript or 'Script' with RunContext Server)\n"
-				elseif not env.isdecompile() then
-					source = source .. "-- Reason: Your executor does not support decompiler. (missing 'decompile' function and 'getscriptbytecode' function as fallback)\n"
-				else
-					source = source .. "-- Reason: Unknown Error.\n"
-				end
-				source = source .. "-- Executor: "..executorName.." ("..executorVersion..")"
-			end
-		else
-			PreviousScr = scr
-			dumpbtn.TextColor3 = Color3.new(1,1,1)
-
-			local decompiled = source
-
-			source = "-- Script Path: "..getPath(scr).."\n"
-
-			if Settings.ScriptViewer.ShowMoreInfo then
-				source = source .. "-- Took "..tostring(math.floor( (tick() - oldtick) * 100) / 100).."s to decompile.\n"
-				source = source .. "-- Executor: "..executorName.." ("..executorVersion..")\n\n"
-			end
-
-			source = source .. decompiled
-
-			oldtick = nil
-			decompiled = nil
-		end
-
-		codeFrame:SetText(source)
 		window:Show()
-		if lineIndex then
-			task.defer(function()
-				if codeFrame.ScrollV then
-					codeFrame.ScrollV:ScrollTo(lineIndex)
+		Lib.ShowLoading(window.GuiElems.Content, "Decompiling script...")
+		task.spawn(function()
+			local oldtick = tick()
+			local s,source = pcall(env.decompile or function() end,scr)
+
+			if not s or not source then
+				PreviousScr = nil
+				dumpbtn.TextColor3 = Color3.new(0.5,0.5,0.5)
+				source = "-- Unable to view source.\n"
+
+				if Settings.ScriptViewer.ShowMoreInfo then
+					source = source .. "-- Script Path: "..getPath(scr).."\n"
+					if (scr.ClassName == "Script" and (scr.RunContext == Enum.RunContext.Legacy or scr.RunContext == Enum.RunContext.Server)) or not scr:IsA("LocalScript") then
+						source = source .. "-- Reason: The script is not running on client. (attempt to decompile ServerScript or 'Script' with RunContext Server)\n"
+					elseif not env.isdecompile() then
+						source = source .. "-- Reason: Your executor does not support decompiler. (missing 'decompile' function and 'getscriptbytecode' function as fallback)\n"
+					else
+						source = source .. "-- Reason: Unknown Error.\n"
+					end
+					source = source .. "-- Executor: "..executorName.." ("..executorVersion..")"
 				end
-			end)
-		end
+			else
+				PreviousScr = scr
+				dumpbtn.TextColor3 = Color3.new(1,1,1)
+
+				local decompiled = source
+
+				source = "-- Script Path: "..getPath(scr).."\n"
+
+				if Settings.ScriptViewer.ShowMoreInfo then
+					source = source .. "-- Took "..tostring(math.floor( (tick() - oldtick) * 100) / 100).."s to decompile.\n"
+					source = source .. "-- Executor: "..executorName.." ("..executorVersion..")\n\n"
+				end
+
+				source = source .. decompiled
+
+				oldtick = nil
+				decompiled = nil
+			end
+
+			Lib.HideLoading(window.GuiElems.Content)
+			codeFrame:SetText(source)
+			if lineIndex then
+				task.defer(function()
+					if codeFrame.ScrollV then
+						codeFrame.ScrollV:ScrollTo(lineIndex)
+					end
+				end)
+			end
+		end)
 	end
 
 	return ScriptViewer

@@ -7314,6 +7314,44 @@ local function main()
 		return {new = new}
 	end)()
 
+	Lib.ShowLoading = function(parentFrame, text)
+		Lib.HideLoading(parentFrame)
+
+		local loadingOverlay = create({
+			{1, "Frame", {Active = true, BackgroundColor3 = Settings.Theme.Main1, BackgroundTransparency = 0.15, BorderSizePixel = 0, Name = "LoadingOverlay", Parent = parentFrame, Size = UDim2.new(1, 0, 1, 0), ZIndex = 10}},
+			{2, "TextLabel", {BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1, Font = 3, Name = "LoadingText", Parent = {1}, Position = UDim2.new(0, 0, 0.52, 0), Size = UDim2.new(1, 0, 0, 30), Text = text or "Loading...", TextColor3 = Settings.Theme.Text, TextSize = 14, ZIndex = 11}},
+			{3, "ImageLabel", {AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1, Image = "rbxassetid://5642310344", ImageColor3 = Settings.Theme.Highlight, Name = "LoadingSpinner", Parent = {1}, Position = UDim2.new(0.5, 0, 0.42, 0), Size = UDim2.new(0, 24, 0, 24), ZIndex = 11}},
+		})
+
+		local active = true
+		task.spawn(function()
+			local angle = 0
+			while active and loadingOverlay and loadingOverlay.Parent do
+				angle = (angle + 10) % 360
+				loadingOverlay.LoadingSpinner.Rotation = angle
+				task.wait(0.03)
+			end
+		end)
+
+		parentFrame:SetAttribute("LoadingOverlayActive", true)
+		local conn
+		conn = parentFrame.AttributeChanged:Connect(function(attr)
+			if attr == "LoadingOverlayActive" and not parentFrame:GetAttribute("LoadingOverlayActive") then
+				active = false
+				if conn then conn:Disconnect() conn = nil end
+				loadingOverlay:Destroy()
+			end
+		end)
+	end
+
+	Lib.HideLoading = function(parentFrame)
+		parentFrame:SetAttribute("LoadingOverlayActive", nil)
+		local existing = parentFrame:FindFirstChild("LoadingOverlay")
+		if existing then
+			existing:Destroy()
+		end
+	end
+
 	return Lib
 end
 
