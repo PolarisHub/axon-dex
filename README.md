@@ -1,4 +1,5 @@
 # Axon
+Made by axon (xenith_8)
 
 A remake of **Dex++** (by Chillz), itself a revival of **Moon's Dex v3** — a full
 in-game instance explorer, property editor, script viewer, console, save-instance

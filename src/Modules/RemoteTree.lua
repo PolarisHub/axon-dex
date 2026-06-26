@@ -82,75 +82,331 @@ local function main()
 		return isa(inst, "RemoteEvent") or isa(inst, "RemoteFunction") or isa(inst, "BindableEvent") or isa(inst, "BindableFunction") or isa(inst, "UnreliableRemoteEvent")
 	end
 
-	RemoteTree.Build = function()
-		local prevObj = selectedNode and selectedNode.Obj
-		table.clear(nodeMap)
-		rootNode = {Obj = game, Children = {}, IsRemote = false, Parent = nil}
-		nodeMap[game] = rootNode
+	local currentSearchId = 0
+	local loadNodeChildren, disconnectNode, onDescendantAdded, onDescendantRemoving, connectNameListener, startSearch
 
-		local remotes = {}
-		local getChildren = game.GetChildren
-		local queue = {game}
+	local function hasRemoteDescendant(inst)
+		local success, result = pcall(function()
+			return inst:FindFirstChildWhichIsA("RemoteEvent", true) or
+			       inst:FindFirstChildWhichIsA("RemoteFunction", true) or
+			       inst:FindFirstChildWhichIsA("UnreliableRemoteEvent", true) or
+			       inst:FindFirstChildWhichIsA("BindableEvent", true) or
+			       inst:FindFirstChildWhichIsA("BindableFunction", true)
+		end)
+		return success and result ~= nil
+	end
+
+	function connectNameListener(n)
+		if not n.Connections then n.Connections = {} end
+		local success, conn = pcall(function()
+			return n.Obj:GetPropertyChangedSignal("Name"):Connect(function()
+				local p = n.Parent
+				if p then
+					table.sort(p.Children, function(a, b)
+						if a.IsRemote ~= b.IsRemote then return b.IsRemote and not a.IsRemote end
+						return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+					end)
+				end
+				RemoteTree.Flatten()
+				RemoteTree.Refresh()
+			end)
+		end)
+		if success and conn then
+			table.insert(n.Connections, conn)
+		end
+	end
+
+	function loadNodeChildren(node)
+		if node.ChildrenLoaded then return end
+		node.ChildrenLoaded = true
+		table.clear(node.Children)
+
+		local childrenObj = node.Obj:GetChildren()
 		local start = os.clock()
-
-		while #queue > 0 do
-			local inst = table.remove(queue)
-			local ch = getChildren(inst)
-			for i = 1, #ch do
-				local c = ch[i]
-				if isRemote(c) then remotes[#remotes + 1] = c end
-				table.insert(queue, c)
+		for i = 1, #childrenObj do
+			local c = childrenObj[i]
+			local isRem = isRemote(c)
+			local shouldAdd = isRem
+			if not shouldAdd then
+				shouldAdd = hasRemoteDescendant(c)
 			end
+
+			if shouldAdd then
+				local childNode = nodeMap[c]
+				if not childNode then
+					childNode = {
+						Obj = c,
+						Children = {},
+						IsRemote = isRem,
+						Parent = node,
+						Depth = node.Depth + 1,
+						Expanded = expandedByObj[c] or false
+					}
+					nodeMap[c] = childNode
+				else
+					childNode.Parent = node
+					childNode.Depth = node.Depth + 1
+				end
+				table.insert(node.Children, childNode)
+				connectNameListener(childNode)
+			end
+
 			if os.clock() - start > 0.002 then
 				task.wait()
 				start = os.clock()
 			end
 		end
 
-		local function getNode(inst)
-			local n = nodeMap[inst]
-			if n then return n end
-			local par = inst.Parent
-			local pnode = (par and getNode(par)) or rootNode
-			n = {Obj = inst, Children = {}, IsRemote = isRemote(inst), Parent = pnode}
-			nodeMap[inst] = n
-			pnode.Children[#pnode.Children + 1] = n
-			return n
-		end
+		table.sort(node.Children, function(a, b)
+			if a.IsRemote ~= b.IsRemote then return b.IsRemote and not a.IsRemote end
+			return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+		end)
 
-		start = os.clock()
-		for i = 1, #remotes do
-			if i % 100 == 0 and os.clock() - start > 0.002 then
-				task.wait()
-				start = os.clock()
+		-- Expand children if they were expanded
+		for i = 1, #node.Children do
+			local cn = node.Children[i]
+			if cn.Expanded then
+				loadNodeChildren(cn)
 			end
-			pcall(getNode, remotes[i])
 		end
 
-		local function finalize(node, depth)
-			node.Depth = depth
-			local saved = expandedByObj[node.Obj]
-			node.Expanded = (saved == nil) and true or saved
-
-			local ch = node.Children
-			table.sort(ch, function(a, b)
-				if a.IsRemote ~= b.IsRemote then return b.IsRemote and not a.IsRemote end
-				return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+		if not node.Connections then
+			local conns = {}
+			local success1, conn1 = pcall(function()
+				return node.Obj.DescendantAdded:Connect(function(desc)
+					onDescendantAdded(node, desc)
+				end)
 			end)
-			for i = 1, #ch do
-				ch[i].IsLast = (i == #ch)
-				finalize(ch[i], depth + 1)
+			if success1 and conn1 then table.insert(conns, conn1) end
+
+			local success2, conn2 = pcall(function()
+				return node.Obj.DescendantRemoving:Connect(function(desc)
+					onDescendantRemoving(node, desc)
+				end)
+			end)
+			if success2 and conn2 then table.insert(conns, conn2) end
+
+			node.Connections = conns
+		end
+	end
+
+	function disconnectNode(node)
+		if node.Connections then
+			for i = 1, #node.Connections do
+				node.Connections[i]:Disconnect()
+			end
+			node.Connections = nil
+		end
+		node.ChildrenLoaded = false
+		for i = 1, #node.Children do
+			disconnectNode(node.Children[i])
+			nodeMap[node.Children[i].Obj] = nil
+		end
+		table.clear(node.Children)
+	end
+
+	function onDescendantAdded(parentNode, desc)
+		if not isRemote(desc) then return end
+
+		local path = {}
+		local curr = desc.Parent
+		while curr and curr ~= parentNode.Obj do
+			table.insert(path, 1, curr)
+			curr = curr.Parent
+		end
+		if not curr then return end
+
+		local currNode = parentNode
+		for i = 1, #path do
+			local inst = path[i]
+			if not currNode.ChildrenLoaded then return end
+			local foundNode
+			for j = 1, #currNode.Children do
+				if currNode.Children[j].Obj == inst then
+					foundNode = currNode.Children[j]
+					break
+				end
+			end
+			if not foundNode then
+				foundNode = {
+					Obj = inst,
+					Children = {},
+					IsRemote = false,
+					Parent = currNode,
+					Depth = currNode.Depth + 1,
+					Expanded = expandedByObj[inst] or false
+				}
+				nodeMap[inst] = foundNode
+				table.insert(currNode.Children, foundNode)
+				connectNameListener(foundNode)
+				table.sort(currNode.Children, function(a, b)
+					if a.IsRemote ~= b.IsRemote then return b.IsRemote and not a.IsRemote end
+					return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+				end)
+			end
+			currNode = foundNode
+		end
+
+		if currNode.ChildrenLoaded then
+			local foundRemote
+			for j = 1, #currNode.Children do
+				if currNode.Children[j].Obj == desc then
+					foundRemote = true
+					break
+				end
+			end
+			if not foundRemote then
+				local remoteNode = {
+					Obj = desc,
+					Children = {},
+					IsRemote = true,
+					Parent = currNode,
+					Depth = currNode.Depth + 1,
+					Expanded = false
+				}
+				nodeMap[desc] = remoteNode
+				table.insert(currNode.Children, remoteNode)
+				connectNameListener(remoteNode)
+				table.sort(currNode.Children, function(a, b)
+					if a.IsRemote ~= b.IsRemote then return b.IsRemote and not a.IsRemote end
+					return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+				end)
 			end
 		end
-		finalize(rootNode, 0)
-		rootNode.IsLast = true
+
+		RemoteTree.Flatten()
+		RemoteTree.UpdateView()
+		RemoteTree.Refresh()
+	end
+
+	function onDescendantRemoving(parentNode, desc)
+		if not isRemote(desc) then return end
+		local descNode = nodeMap[desc]
+		if not descNode then return end
+
+		local p = descNode.Parent
+		if p then
+			for i = 1, #p.Children do
+				if p.Children[i] == descNode then
+					table.remove(p.Children, i)
+					break
+				end
+			end
+		end
+		nodeMap[desc] = nil
+		disconnectNode(descNode)
+
+		RemoteTree.Flatten()
+		RemoteTree.UpdateView()
+		RemoteTree.Refresh()
+	end
+
+	function startSearch(query)
+		currentSearchId = currentSearchId + 1
+		local mySearchId = currentSearchId
+
+		table.clear(nodeMap)
+		rootNode = {Obj = game, Children = {}, IsRemote = false, Parent = nil, Depth = 0, Expanded = true}
+		nodeMap[game] = rootNode
+
+		local lq = query:lower()
+		local queue = {game}
+		local start = os.clock()
+		local matchCount = 0
+
+		local function addSearchMatch(inst)
+			local function getSearchNode(item)
+				local n = nodeMap[item]
+				if n then return n end
+				local par = item.Parent
+				local pnode = (par and getSearchNode(par)) or rootNode
+				n = {
+					Obj = item,
+					Children = {},
+					IsRemote = isRemote(item),
+					Parent = pnode,
+					Depth = pnode.Depth + 1,
+					Expanded = true
+				}
+				nodeMap[item] = n
+				table.insert(pnode.Children, n)
+				connectNameListener(n)
+				return n
+			end
+			getSearchNode(inst)
+		end
+
+		coroutine.wrap(function()
+			local head = 1
+			while head <= #queue do
+				if mySearchId ~= currentSearchId then return end
+
+				local inst = queue[head]
+				head = head + 1
+
+				local children = inst:GetChildren()
+				for i = 1, #children do
+					local c = children[i]
+					local isRem = isRemote(c)
+					if isRem then
+						if string.find(tostring(c):lower(), lq, 1, true) then
+							addSearchMatch(c)
+							matchCount = matchCount + 1
+							if matchCount % 10 == 0 then
+								RemoteTree.Flatten()
+								RemoteTree.UpdateView()
+								RemoteTree.Refresh()
+							end
+						end
+					end
+					if #c:GetChildren() > 0 then
+						table.insert(queue, c)
+					end
+				end
+
+				if os.clock() - start > 0.002 then
+					task.wait()
+					start = os.clock()
+				end
+			end
+
+			if mySearchId == currentSearchId then
+				local function finalizeSort(node)
+					table.sort(node.Children, function(a, b)
+						if a.IsRemote ~= b.IsRemote then return b.IsRemote and not a.IsRemote end
+						return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+					end)
+					for i = 1, #node.Children do
+						finalizeSort(node.Children[i])
+					end
+				end
+				finalizeSort(rootNode)
+
+				RemoteTree.Flatten()
+				RemoteTree.UpdateView()
+				RemoteTree.Refresh()
+
+				if countLabel then
+					countLabel.Text = matchCount .. (matchCount == 1 and " match" or " matches")
+				end
+				RemoteTree.RemoteCount = matchCount
+			end
+		end)()
+	end
+
+	RemoteTree.Build = function()
+		local prevObj = selectedNode and selectedNode.Obj
+		table.clear(nodeMap)
+		rootNode = {Obj = game, Children = {}, IsRemote = false, Parent = nil, Depth = 0}
+		nodeMap[game] = rootNode
 		rootNode.Expanded = (expandedByObj[game] == nil) and true or expandedByObj[game]
+
+		loadNodeChildren(rootNode)
 
 		selectedNode = (prevObj and nodeMap[prevObj]) or nil
 
-		RemoteTree.RemoteCount = #remotes
 		if countLabel then
-			countLabel.Text = #remotes .. (#remotes == 1 and " remote" or " remotes")
+			countLabel.Text = "Lazy Loading"
 		end
 	end
 
@@ -158,41 +414,14 @@ local function main()
 		table.clear(tree)
 		if not rootNode then return end
 
-		local query = RemoteTree.Query
-		local searchSet
-		if query and #query > 0 then
-			searchSet = {}
-			local lq = query:lower()
-			local find = string.find
-			for _, node in pairs(nodeMap) do
-				if node.IsRemote and find(tostring(node.Obj):lower(), lq, 1, true) then
-					local a = node
-					while a and not searchSet[a] do
-						searchSet[a] = true
-						a = a.Parent
-					end
-				end
-			end
-		end
-
-		rootNode.VisibleIsLast = true
-		tree[#tree + 1] = rootNode
 		local function recur(node)
-			if #node.Children == 0 then return end
-			local expand = searchSet ~= nil or node.Expanded
-			if not expand then return end
-			local lastEmitted
-			for i = 1, #node.Children do
-				local c = node.Children[i]
-				if not searchSet or searchSet[c] then lastEmitted = c end
-			end
-			for i = 1, #node.Children do
-				local c = node.Children[i]
-				if not searchSet or searchSet[c] then
-					c.VisibleIsLast = (c == lastEmitted)
-					tree[#tree + 1] = c
-					recur(c)
-				end
+			tree[#tree + 1] = node
+			if not node.Expanded then return end
+			local ch = node.Children
+			for i = 1, #ch do
+				local c = ch[i]
+				c.VisibleIsLast = (i == #ch)
+				recur(c)
 			end
 		end
 		recur(rootNode)
@@ -313,9 +542,16 @@ local function main()
 
 		entry.Expand.MouseButton1Click:Connect(function()
 			local node = tree[index + RemoteTree.Index]
-			if not node or #node.Children == 0 then return end
-			node.Expanded = not node.Expanded
-			expandedByObj[node.Obj] = node.Expanded
+			if not node then return end
+			if node.Expanded then
+				node.Expanded = false
+				expandedByObj[node.Obj] = false
+				disconnectNode(node)
+			else
+				node.Expanded = true
+				expandedByObj[node.Obj] = true
+				loadNodeChildren(node)
+			end
 			RemoteTree.Flatten()
 			RemoteTree.UpdateView()
 			RemoteTree.Refresh()
@@ -328,11 +564,9 @@ local function main()
 	RemoteTree.SetSelected = function(node)
 		selectedNode = node
 		RemoteTree.Refresh()
-		if node and node.Obj and Explorer and Explorer.Selection and nodes then
-			local expNode = nodes[node.Obj]
-			if expNode then
-				Explorer.Selection:Set(expNode)
-			end
+		if node and node.Obj and Explorer and Explorer.Selection then
+			node.Class = node.Obj.ClassName
+			Explorer.Selection:Set(node)
 		end
 	end
 
@@ -384,7 +618,7 @@ local function main()
 					entry.Highlight.BackgroundTransparency = 1
 				end
 
-				if #node.Children > 0 then
+				if #node.Children > 0 or (not node.IsRemote and not node.ChildrenLoaded) then
 					entry.Expand.Position = UDim2.new(0, depth * INDENT, 0, 2)
 					if Lib.CheckMouseInGui(entry.Expand) then
 						miscIcons:DisplayByKey(entry.Expand.Icon, node.Expanded and "Collapse_Over" or "Expand_Over")
@@ -597,9 +831,16 @@ local function main()
 			if button == 1 and combo == 2 then
 				if node.IsRemote then
 					RemoteTree.PromptFire(node.Obj)
-				elseif #node.Children > 0 then
-					node.Expanded = not node.Expanded
-					expandedByObj[node.Obj] = node.Expanded
+				else
+					if node.Expanded then
+						node.Expanded = false
+						expandedByObj[node.Obj] = false
+						disconnectNode(node)
+					else
+						node.Expanded = true
+						expandedByObj[node.Obj] = true
+						loadNodeChildren(node)
+					end
 					RemoteTree.Flatten()
 					RemoteTree.UpdateView()
 					RemoteTree.Refresh()
@@ -615,26 +856,22 @@ local function main()
 	RemoteTree.InitSearch = function()
 		Lib.ViewportTextBox.convert(searchBox)
 		searchBox:GetPropertyChangedSignal("Text"):Connect(function()
-			RemoteTree.Query = searchBox.Text
-			RemoteTree.Flatten()
-			RemoteTree.UpdateView()
-			RemoteTree.Refresh()
+			local q = searchBox.Text
+			RemoteTree.Query = q
+			if q and #q > 0 then
+				startSearch(q)
+			else
+				currentSearchId = currentSearchId + 1
+				RemoteTree.Build()
+				RemoteTree.Flatten()
+				RemoteTree.UpdateView()
+				RemoteTree.Refresh()
+			end
 		end)
 	end
 
 	RemoteTree.SetupConnections = function()
-		local function onAdded(obj)
-			if isRemote(obj) and RemoteTree.Active then
-				coroutine.wrap(RemoteTree.PerformRebuild)()
-			end
-		end
-		local function onRemoving(obj)
-			if isRemote(obj) and nodeMap[obj] and RemoteTree.Active then
-				coroutine.wrap(RemoteTree.PerformRebuild)()
-			end
-		end
-		game.DescendantAdded:Connect(function(o) pcall(onAdded, o) end)
-		game.DescendantRemoving:Connect(function(o) pcall(onRemoving, o) end)
+		-- Handled dynamically per expanded folder (dynamic connection pooling)
 	end
 
 	RemoteTree.InitPromptWindow = function()

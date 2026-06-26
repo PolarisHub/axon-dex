@@ -139,42 +139,83 @@ local function main()
 		end
 		return urls
 	end
+	local scanQueue = {game}
+	local scannedInstances = setmetatable({}, {__mode = "k"})
+	local totalScannedCount = 0
+	local bgScanRunning = false
 
-	AssetTree.Scan = function()
-		for _, cat in ipairs(categories) do
-			scanData[cat.Key] = {}
-		end
+	local function scanSingleInstance(inst)
+		if scannedInstances[inst] then return end
+		scannedInstances[inst] = true
 
-		local queue = {game}
-		local start = os.clock()
-		local getChildren = game.GetChildren
-
-		while #queue > 0 do
-			local inst = table.remove(queue)
-			local ch = getChildren(inst)
-			for i = 1, #ch do
-				local obj = ch[i]
-				local urls = getAssetUrls(obj)
-				for _, url in ipairs(urls) do
-					if url then
-						local assetId = parseAssetId(url)
-						if assetId then
-							local catKey = determineCategory(obj)
-							local catAssets = scanData[catKey]
-							if not catAssets[assetId] then
-								catAssets[assetId] = { AssetId = assetId, Objects = {} }
-							end
-							table.insert(catAssets[assetId].Objects, obj)
+		local urls = getAssetUrls(inst)
+		for _, url in ipairs(urls) do
+			if url then
+				local assetId = parseAssetId(url)
+				if assetId then
+					local catKey = determineCategory(inst)
+					local catAssets = scanData[catKey]
+					if not catAssets then
+						catAssets = {}
+						scanData[catKey] = catAssets
+					end
+					local assetInfo = catAssets[assetId]
+					if not assetInfo then
+						assetInfo = { AssetId = assetId, Objects = {} }
+						catAssets[assetId] = assetInfo
+					end
+					local found = false
+					for i = 1, #assetInfo.Objects do
+						if assetInfo.Objects[i] == inst then
+							found = true
+							break
 						end
 					end
+					if not found then
+						table.insert(assetInfo.Objects, inst)
+					end
 				end
-				table.insert(queue, obj)
-			end
-			if os.clock() - start > 0.002 then
-				task.wait()
-				start = os.clock()
 			end
 		end
+	end
+
+	local function startBackgroundScan()
+		if bgScanRunning then return end
+		bgScanRunning = true
+		coroutine.wrap(function()
+			local head = 1
+			while head <= #scanQueue do
+				if not AssetTree.Active then
+					bgScanRunning = false
+					return
+				end
+
+				local inst = scanQueue[head]
+				head = head + 1
+
+				scanSingleInstance(inst)
+
+				local children = inst:GetChildren()
+				for i = 1, #children do
+					table.insert(scanQueue, children[i])
+				end
+
+				totalScannedCount = totalScannedCount + 1
+				if totalScannedCount % 50 == 0 then
+					task.wait()
+					if AssetTree.Active then
+						AssetTree.Flatten()
+						AssetTree.UpdateView()
+						AssetTree.Refresh()
+					end
+				end
+			end
+			bgScanRunning = false
+		end)()
+	end
+
+	AssetTree.Scan = function()
+		startBackgroundScan()
 	end
 
 	AssetTree.Build = function()
@@ -453,11 +494,9 @@ local function main()
 
 		-- Selection updates Properties panel automatically
 		if node then
-			if node.IsInstance and node.Obj and Explorer and Explorer.Selection and nodes then
-				local expNode = nodes[node.Obj]
-				if expNode then
-					Explorer.Selection:Set(expNode)
-				end
+			if node.IsInstance and node.Obj and Explorer and Explorer.Selection then
+				node.Class = node.Obj.ClassName
+				Explorer.Selection:Set(node)
 			end
 			AssetTree.ShowPreview(node)
 		else
@@ -653,14 +692,15 @@ local function main()
 	end
 
 	AssetTree.Rebuild = function()
-		local status = Main.CreateIntro("Scanning assets")
-		coroutine.wrap(function()
-			AssetTree.Scan()
-			AssetTree.Flatten()
-			AssetTree.UpdateView()
-			AssetTree.Refresh()
-			status.Close()
-		end)()
+		table.clear(scanQueue)
+		table.insert(scanQueue, game)
+		table.clear(scannedInstances)
+		for _, cat in ipairs(categories) do
+			scanData[cat.Key] = {}
+		end
+		totalScannedCount = 0
+		bgScanRunning = false
+		startBackgroundScan()
 	end
 
 	AssetTree.Init = function()

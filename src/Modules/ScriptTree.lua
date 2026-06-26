@@ -60,6 +60,7 @@ local function main()
 	local selectedNode
 	local refreshDebounce, rebuildDebounce, scanningFlag
 	local isa = game.IsA
+	local currentSearchId = 0
 
 	ScriptTree.Index = 0
 	ScriptTree.Query = ""
@@ -67,125 +68,338 @@ local function main()
 	ScriptTree.Active = false
 	ScriptTree.GuiElems = {}
 
-	-- Builds nodeMap/rootNode from a fresh scan of every LuaSourceContainer.
-	ScriptTree.Build = function()
-		local prevObj = selectedNode and selectedNode.Obj
-		table.clear(nodeMap)
-		rootNode = {Obj = game, Children = {}, IsScript = false, Parent = nil}
-		nodeMap[game] = rootNode
+	-- Helper forward declarations
+	local loadNodeChildren, disconnectNode, onDescendantAdded, onDescendantRemoving, connectNameListener, startSearch
 
-		local scripts = {}
-		local getChildren = game.GetChildren
-		local queue = {game}
+	function connectNameListener(n)
+		if not n.Connections then n.Connections = {} end
+		local success, conn = pcall(function()
+			return n.Obj:GetPropertyChangedSignal("Name"):Connect(function()
+				local p = n.Parent
+				if p then
+					table.sort(p.Children, function(a, b)
+						if a.IsScript ~= b.IsScript then return b.IsScript and not a.IsScript end
+						return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+					end)
+				end
+				ScriptTree.Flatten()
+				ScriptTree.Refresh()
+			end)
+		end)
+		if success and conn then
+			table.insert(n.Connections, conn)
+		end
+	end
+
+	function loadNodeChildren(node)
+		if node.ChildrenLoaded then return end
+		node.ChildrenLoaded = true
+		table.clear(node.Children)
+
+		local childrenObj = node.Obj:GetChildren()
 		local start = os.clock()
-
-		while #queue > 0 do
-			local inst = table.remove(queue)
-			local ch = getChildren(inst)
-			for i = 1, #ch do
-				local c = ch[i]
-				if isa(c, "LuaSourceContainer") then scripts[#scripts + 1] = c end
-				table.insert(queue, c)
+		for i = 1, #childrenObj do
+			local c = childrenObj[i]
+			local isScript = isa(c, "LuaSourceContainer")
+			local shouldAdd = isScript
+			if not shouldAdd then
+				local success, hasScript = pcall(function()
+					return c:FindFirstChildWhichIsA("LuaSourceContainer", true) ~= nil
+				end)
+				shouldAdd = success and hasScript
 			end
+
+			if shouldAdd then
+				local childNode = nodeMap[c]
+				if not childNode then
+					childNode = {
+						Obj = c,
+						Children = {},
+						IsScript = isScript,
+						Parent = node,
+						Depth = node.Depth + 1,
+						Expanded = expandedByObj[c] or false
+					}
+					nodeMap[c] = childNode
+				else
+					childNode.Parent = node
+					childNode.Depth = node.Depth + 1
+				end
+				table.insert(node.Children, childNode)
+				connectNameListener(childNode)
+			end
+
 			if os.clock() - start > 0.002 then
 				task.wait()
 				start = os.clock()
 			end
 		end
 
-		-- Build the ancestor chain only along paths that contain scripts.
-		local function getNode(inst)
-			local n = nodeMap[inst]
-			if n then return n end
-			local par = inst.Parent
-			local pnode = (par and getNode(par)) or rootNode
-			n = {Obj = inst, Children = {}, IsScript = isa(inst, "LuaSourceContainer"), Parent = pnode}
-			nodeMap[inst] = n
-			pnode.Children[#pnode.Children + 1] = n
-			return n
-		end
+		table.sort(node.Children, function(a, b)
+			if a.IsScript ~= b.IsScript then return b.IsScript and not a.IsScript end
+			return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+		end)
 
-		start = os.clock()
-		for i = 1, #scripts do
-			if i % 100 == 0 and os.clock() - start > 0.002 then
-				task.wait()
-				start = os.clock()
+		-- Expand children if they were expanded
+		for i = 1, #node.Children do
+			local cn = node.Children[i]
+			if cn.Expanded then
+				loadNodeChildren(cn)
 			end
-			pcall(getNode, scripts[i])
 		end
 
-		-- Assign depth, sort children (containers first then scripts, alpha),
-		-- mark IsLast, and restore expand state.
-		local function finalize(node, depth)
-			node.Depth = depth
-			local saved = expandedByObj[node.Obj]
-			node.Expanded = (saved == nil) and true or saved
-
-			local ch = node.Children
-			table.sort(ch, function(a, b)
-				if a.IsScript ~= b.IsScript then return b.IsScript and not a.IsScript end
-				return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+		if not node.Connections then
+			local conns = {}
+			local success1, conn1 = pcall(function()
+				return node.Obj.DescendantAdded:Connect(function(desc)
+					onDescendantAdded(node, desc)
+				end)
 			end)
-			for i = 1, #ch do
-				ch[i].IsLast = (i == #ch)
-				finalize(ch[i], depth + 1)
-			end
-		end
-		finalize(rootNode, 0)
-		rootNode.IsLast = true
-		rootNode.Expanded = (expandedByObj[game] == nil) and true or expandedByObj[game]
+			if success1 and conn1 then table.insert(conns, conn1) end
 
-		-- Re-resolve the selection onto the freshly-built nodes (or drop it if
-		-- the selected instance no longer exists).
-		selectedNode = (prevObj and nodeMap[prevObj]) or nil
+			local success2, conn2 = pcall(function()
+				return node.Obj.DescendantRemoving:Connect(function(desc)
+					onDescendantRemoving(node, desc)
+				end)
+			end)
+			if success2 and conn2 then table.insert(conns, conn2) end
 
-		ScriptTree.ScriptCount = #scripts
-		if countLabel then
-			countLabel.Text = #scripts .. (#scripts == 1 and " script" or " scripts")
+			node.Connections = conns
 		end
 	end
 
-	-- Flattens the node tree into `tree` honoring expansion and the search query.
+	function disconnectNode(node)
+		if node.Connections then
+			for i = 1, #node.Connections do
+				node.Connections[i]:Disconnect()
+			end
+			node.Connections = nil
+		end
+		node.ChildrenLoaded = false
+		for i = 1, #node.Children do
+			disconnectNode(node.Children[i])
+			nodeMap[node.Children[i].Obj] = nil
+		end
+		table.clear(node.Children)
+	end
+
+	function onDescendantAdded(parentNode, desc)
+		if not isa(desc, "LuaSourceContainer") then return end
+
+		local path = {}
+		local curr = desc.Parent
+		while curr and curr ~= parentNode.Obj do
+			table.insert(path, 1, curr)
+			curr = curr.Parent
+		end
+		if not curr then return end
+
+		local currNode = parentNode
+		for i = 1, #path do
+			local inst = path[i]
+			if not currNode.ChildrenLoaded then return end
+			local foundNode
+			for j = 1, #currNode.Children do
+				if currNode.Children[j].Obj == inst then
+					foundNode = currNode.Children[j]
+					break
+				end
+			end
+			if not foundNode then
+				foundNode = {
+					Obj = inst,
+					Children = {},
+					IsScript = false,
+					Parent = currNode,
+					Depth = currNode.Depth + 1,
+					Expanded = expandedByObj[inst] or false
+				}
+				nodeMap[inst] = foundNode
+				table.insert(currNode.Children, foundNode)
+				connectNameListener(foundNode)
+				table.sort(currNode.Children, function(a, b)
+					if a.IsScript ~= b.IsScript then return b.IsScript and not a.IsScript end
+					return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+				end)
+			end
+			currNode = foundNode
+		end
+
+		if currNode.ChildrenLoaded then
+			local foundScript
+			for j = 1, #currNode.Children do
+				if currNode.Children[j].Obj == desc then
+					foundScript = true
+					break
+				end
+			end
+			if not foundScript then
+				local scriptNode = {
+					Obj = desc,
+					Children = {},
+					IsScript = true,
+					Parent = currNode,
+					Depth = currNode.Depth + 1,
+					Expanded = false
+				}
+				nodeMap[desc] = scriptNode
+				table.insert(currNode.Children, scriptNode)
+				connectNameListener(scriptNode)
+				table.sort(currNode.Children, function(a, b)
+					if a.IsScript ~= b.IsScript then return b.IsScript and not a.IsScript end
+					return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+				end)
+			end
+		end
+
+		ScriptTree.Flatten()
+		ScriptTree.UpdateView()
+		ScriptTree.Refresh()
+	end
+
+	function onDescendantRemoving(parentNode, desc)
+		if not isa(desc, "LuaSourceContainer") then return end
+		local descNode = nodeMap[desc]
+		if not descNode then return end
+
+		local p = descNode.Parent
+		if p then
+			for i = 1, #p.Children do
+				if p.Children[i] == descNode then
+					table.remove(p.Children, i)
+					break
+				end
+			end
+		end
+		nodeMap[desc] = nil
+		disconnectNode(descNode)
+
+		ScriptTree.Flatten()
+		ScriptTree.UpdateView()
+		ScriptTree.Refresh()
+	end
+
+	function startSearch(query)
+		currentSearchId = currentSearchId + 1
+		local mySearchId = currentSearchId
+
+		table.clear(nodeMap)
+		rootNode = {Obj = game, Children = {}, IsScript = false, Parent = nil, Depth = 0, Expanded = true}
+		nodeMap[game] = rootNode
+
+		local lq = query:lower()
+		local queue = {game}
+		local start = os.clock()
+		local matchCount = 0
+
+		local function addSearchMatch(inst)
+			local function getSearchNode(item)
+				local n = nodeMap[item]
+				if n then return n end
+				local par = item.Parent
+				local pnode = (par and getSearchNode(par)) or rootNode
+				n = {
+					Obj = item,
+					Children = {},
+					IsScript = isa(item, "LuaSourceContainer"),
+					Parent = pnode,
+					Depth = pnode.Depth + 1,
+					Expanded = true
+				}
+				nodeMap[item] = n
+				table.insert(pnode.Children, n)
+				connectNameListener(n)
+				return n
+			end
+			getSearchNode(inst)
+		end
+
+		coroutine.wrap(function()
+			local head = 1
+			while head <= #queue do
+				if mySearchId ~= currentSearchId then return end
+
+				local inst = queue[head]
+				head = head + 1
+
+				local children = inst:GetChildren()
+				for i = 1, #children do
+					local c = children[i]
+					local isScript = isa(c, "LuaSourceContainer")
+					if isScript then
+						if string.find(tostring(c):lower(), lq, 1, true) then
+							addSearchMatch(c)
+							matchCount = matchCount + 1
+							if matchCount % 10 == 0 then
+								ScriptTree.Flatten()
+								ScriptTree.UpdateView()
+								ScriptTree.Refresh()
+							end
+						end
+					end
+					if #c:GetChildren() > 0 then
+						table.insert(queue, c)
+					end
+				end
+
+				if os.clock() - start > 0.002 then
+					task.wait()
+					start = os.clock()
+				end
+			end
+
+			if mySearchId == currentSearchId then
+				local function finalizeSort(node)
+					table.sort(node.Children, function(a, b)
+						if a.IsScript ~= b.IsScript then return b.IsScript and not a.IsScript end
+						return tostring(a.Obj):lower() < tostring(b.Obj):lower()
+					end)
+					for i = 1, #node.Children do
+						finalizeSort(node.Children[i])
+					end
+				end
+				finalizeSort(rootNode)
+
+				ScriptTree.Flatten()
+				ScriptTree.UpdateView()
+				ScriptTree.Refresh()
+
+				if countLabel then
+					countLabel.Text = matchCount .. (matchCount == 1 and " match" or " matches")
+				end
+				ScriptTree.ScriptCount = matchCount
+			end
+		end)()
+	end
+
+	ScriptTree.Build = function()
+		local prevObj = selectedNode and selectedNode.Obj
+		table.clear(nodeMap)
+		rootNode = {Obj = game, Children = {}, IsScript = false, Parent = nil, Depth = 0}
+		nodeMap[game] = rootNode
+		rootNode.Expanded = (expandedByObj[game] == nil) and true or expandedByObj[game]
+
+		loadNodeChildren(rootNode)
+
+		selectedNode = (prevObj and nodeMap[prevObj]) or nil
+
+		if countLabel then
+			countLabel.Text = "Lazy Loading"
+		end
+	end
+
 	ScriptTree.Flatten = function()
 		table.clear(tree)
 		if not rootNode then return end
 
-		local query = ScriptTree.Query
-		local searchSet
-		if query and #query > 0 then
-			searchSet = {}
-			local lq = query:lower()
-			local find = string.find
-			for _, node in pairs(nodeMap) do
-				if node.IsScript and find(tostring(node.Obj):lower(), lq, 1, true) then
-					local a = node
-					while a and not searchSet[a] do
-						searchSet[a] = true
-						a = a.Parent
-					end
-				end
-			end
-		end
-
-		rootNode.VisibleIsLast = true
-		tree[#tree + 1] = rootNode
 		local function recur(node)
-			if #node.Children == 0 then return end
-			local expand = searchSet ~= nil or node.Expanded
-			if not expand then return end
-			-- find the last child that will actually be emitted (search can hide some)
-			local lastEmitted
-			for i = 1, #node.Children do
-				local c = node.Children[i]
-				if not searchSet or searchSet[c] then lastEmitted = c end
-			end
-			for i = 1, #node.Children do
-				local c = node.Children[i]
-				if not searchSet or searchSet[c] then
-					c.VisibleIsLast = (c == lastEmitted)
-					tree[#tree + 1] = c
-					recur(c)
-				end
+			tree[#tree + 1] = node
+			if not node.Expanded then return end
+			local ch = node.Children
+			for i = 1, #ch do
+				local c = ch[i]
+				c.VisibleIsLast = (i == #ch)
+				recur(c)
 			end
 		end
 		recur(rootNode)
@@ -311,9 +525,16 @@ local function main()
 		-- Expand / collapse
 		entry.Expand.MouseButton1Click:Connect(function()
 			local node = tree[index + ScriptTree.Index]
-			if not node or #node.Children == 0 then return end
-			node.Expanded = not node.Expanded
-			expandedByObj[node.Obj] = node.Expanded
+			if not node then return end
+			if node.Expanded then
+				node.Expanded = false
+				expandedByObj[node.Obj] = false
+				disconnectNode(node)
+			else
+				node.Expanded = true
+				expandedByObj[node.Obj] = true
+				loadNodeChildren(node)
+			end
 			ScriptTree.Flatten()
 			ScriptTree.UpdateView()
 			ScriptTree.Refresh()
@@ -326,11 +547,9 @@ local function main()
 	ScriptTree.SetSelected = function(node)
 		selectedNode = node
 		ScriptTree.Refresh()
-		if node and node.Obj and Explorer and Explorer.Selection and nodes then
-			local expNode = nodes[node.Obj]
-			if expNode then
-				Explorer.Selection:Set(expNode)
-			end
+		if node and node.Obj and Explorer and Explorer.Selection then
+			node.Class = node.Obj.ClassName
+			Explorer.Selection:Set(node)
 		end
 	end
 
@@ -382,7 +601,7 @@ local function main()
 				end
 
 				-- expand arrow
-				if #node.Children > 0 then
+				if #node.Children > 0 or (not node.IsScript and not node.ChildrenLoaded) then
 					entry.Expand.Position = UDim2.new(0, depth * INDENT, 0, 2)
 					if Lib.CheckMouseInGui(entry.Expand) then
 						miscIcons:DisplayByKey(entry.Expand.Icon, node.Expanded and "Collapse_Over" or "Expand_Over")
@@ -544,9 +763,16 @@ local function main()
 			if button == 1 and combo == 2 then
 				if node.IsScript then
 					ScriptViewer.ViewScript(node.Obj)
-				elseif #node.Children > 0 then
-					node.Expanded = not node.Expanded
-					expandedByObj[node.Obj] = node.Expanded
+				else
+					if node.Expanded then
+						node.Expanded = false
+						expandedByObj[node.Obj] = false
+						disconnectNode(node)
+					else
+						node.Expanded = true
+						expandedByObj[node.Obj] = true
+						loadNodeChildren(node)
+					end
 					ScriptTree.Flatten()
 					ScriptTree.UpdateView()
 					ScriptTree.Refresh()
@@ -562,26 +788,22 @@ local function main()
 	ScriptTree.InitSearch = function()
 		Lib.ViewportTextBox.convert(searchBox)
 		searchBox:GetPropertyChangedSignal("Text"):Connect(function()
-			ScriptTree.Query = searchBox.Text
-			ScriptTree.Flatten()
-			ScriptTree.UpdateView()
-			ScriptTree.Refresh()
+			local q = searchBox.Text
+			ScriptTree.Query = q
+			if q and #q > 0 then
+				startSearch(q)
+			else
+				currentSearchId = currentSearchId + 1
+				ScriptTree.Build()
+				ScriptTree.Flatten()
+				ScriptTree.UpdateView()
+				ScriptTree.Refresh()
+			end
 		end)
 	end
 
 	ScriptTree.SetupConnections = function()
-		local function onAdded(obj)
-			if isa(obj, "LuaSourceContainer") and ScriptTree.Active then
-				coroutine.wrap(ScriptTree.PerformRebuild)()
-			end
-		end
-		local function onRemoving(obj)
-			if isa(obj, "LuaSourceContainer") and nodeMap[obj] and ScriptTree.Active then
-				coroutine.wrap(ScriptTree.PerformRebuild)()
-			end
-		end
-		game.DescendantAdded:Connect(function(o) pcall(onAdded, o) end)
-		game.DescendantRemoving:Connect(function(o) pcall(onRemoving, o) end)
+		-- Handled dynamically per expanded folder (dynamic connection pooling)
 	end
 
 	ScriptTree.Init = function()
