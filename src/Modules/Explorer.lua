@@ -58,7 +58,8 @@ local function main()
 	local addObject,removeObject,moveObject = nil,nil,nil
 
 	local iconData
-	local remote_blocklist = {} -- list of remotes beng blocked, k = the remote instance, v = their old function :3
+	getgenv().AxonRemoteBlocklist = getgenv().AxonRemoteBlocklist or {}
+	local remote_blocklist = getgenv().AxonRemoteBlocklist -- list of remotes beng blocked, k = the remote instance, v = their old function :3
 	nodes = nodes or {}
 
 	addObject = function(root)

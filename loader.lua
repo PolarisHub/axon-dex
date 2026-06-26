@@ -1,6 +1,6 @@
 --[[
 	Axon
-	A remake of Dex++ (by Chillz), itself a remake of Dex v3 (by Moon).
+	A remake of Dex++ (by Axon), itself a remake of Dex v3 (by Moon).
 
 	Public entry point. Load the whole suite with a single loadstring:
 
