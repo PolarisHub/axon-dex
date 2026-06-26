@@ -128,25 +128,39 @@ local function main()
 
 		local parentPar = par
 		task.spawn(function()
-			local insts = getDescendants(root)
+			-- BFS using GetChildren (avoids expensive single-call GetDescendants C++ bridge freeze)
+			local queue = {root}
+			local head = 1
 			local start = os.clock()
-			for i = 1,#insts do
-				local obj = insts[i]
-				if nodes[obj] then continue end
+			local getChildren = game.GetChildren
 
-				local par = nodes[obj.Parent]
-				if not par then continue end
-				local newNode = {Obj = obj, Parent = par}
-				nodes[obj] = newNode
-				par[#par+1] = newNode
+			while head <= #queue do
+				local parentObj = queue[head]
+				head = head + 1
 
-				-- Nil Handling
-				if isNil then
-					nilMap[obj] = true
-					nilCons[obj] = nilCons[obj] or {
-						connectSignal(obj.ChildAdded,addObject),
-						connectSignal(obj.AncestryChanged,moveObject),
-					}
+				local ok, children = pcall(getChildren, parentObj)
+				if ok and children then
+					for i = 1, #children do
+						local obj = children[i]
+						if nodes[obj] then continue end
+
+						local objPar = nodes[obj.Parent]
+						if not objPar then continue end
+						local node = {Obj = obj, Parent = objPar}
+						nodes[obj] = node
+						objPar[#objPar+1] = node
+
+						-- Nil Handling
+						if isNil then
+							nilMap[obj] = true
+							nilCons[obj] = nilCons[obj] or {
+								connectSignal(obj.ChildAdded,addObject),
+								connectSignal(obj.AncestryChanged,moveObject),
+							}
+						end
+
+						queue[#queue+1] = obj
+					end
 				end
 
 				if os.clock() - start > 0.015 then
@@ -2728,7 +2742,7 @@ return search]==]
 							par[#par+1] = newNode
 						end
 
-						table.insert(queue, obj)
+						queue[#queue+1] = obj
 					end
 
 					if os.clock() - start > 0.015 then
@@ -2760,7 +2774,7 @@ return search]==]
 								end
 							end
 
-							table.insert(queue, obj)
+							queue[#queue+1] = obj
 						end
 					end
 

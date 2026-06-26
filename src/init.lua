@@ -728,93 +728,145 @@ Main = (function()
 
 		local clock = os.clock
 		local parseStart = clock()
-		for _,class in ipairs(api.Classes) do
+
+		-- Pre-build tags table helper (avoids repeated loop setup)
+		local function buildTags(tagList)
+			if not tagList then return {} end
+			local t = {}
+			for i = 1, #tagList do t[tagList[i]] = true end
+			return t
+		end
+
+		-- Process all classes with optimised construction
+		local apiClasses = api.Classes
+		for ci = 1, #apiClasses do
 			if clock() - parseStart > 0.015 then
 				task.wait()
 				parseStart = clock()
 			end
-			local newClass = {}
-			newClass.Name = class.Name
-			newClass.Superclass = class.Superclass
-			newClass.Properties = {}
-			newClass.Functions = {}
-			newClass.Events = {}
-			newClass.Callbacks = {}
-			newClass.Tags = {}
 
-			if class.Tags then for c,tag in ipairs(class.Tags) do newClass.Tags[tag] = true end end
-			for __,member in ipairs(class.Members) do
-				local newMember = {}
-				newMember.Name = member.Name
-				newMember.Class = class.Name
-				newMember.Security = member.Security
-				newMember.Tags ={}
-				if member.Tags then for c,tag in ipairs(member.Tags) do newMember.Tags[tag] = true end end
+			local class = apiClasses[ci]
+			local className = class.Name
+			local props, funcs, events = {}, {}, {}
+			local nProps, nFuncs, nEvents = 0, 0, 0
 
+			local members = class.Members
+			for mi = 1, #members do
+				local member = members[mi]
 				local mType = member.MemberType
+
 				if mType == "Property" then
 					local propCategory = member.Category or "Other"
 					if not seenCategories[propCategory] then
 						categoryOrder[#categoryOrder+1] = propCategory
 						seenCategories[propCategory] = true
 					end
-					newMember.ValueType = member.ValueType
-					newMember.Category = propCategory
-					newMember.Serialization = member.Serialization
-					table.insert(newClass.Properties,newMember)
+					nProps = nProps + 1
+					props[nProps] = {
+						Name = member.Name,
+						Class = className,
+						Security = member.Security,
+						Tags = buildTags(member.Tags),
+						ValueType = member.ValueType,
+						Category = propCategory,
+						Serialization = member.Serialization,
+					}
 				elseif mType == "Function" then
-					newMember.Parameters = {}
-					newMember.ReturnType = member.ReturnType.Name
-					for c,param in ipairs(member.Parameters) do
-						table.insert(newMember.Parameters,{Name = param.Name, Type = param.Type.Name})
+					local params = member.Parameters
+					local pList = {}
+					for pi = 1, #params do
+						local p = params[pi]
+						pList[pi] = {Name = p.Name, Type = p.Type.Name}
 					end
-					table.insert(newClass.Functions,newMember)
+					nFuncs = nFuncs + 1
+					funcs[nFuncs] = {
+						Name = member.Name,
+						Class = className,
+						Security = member.Security,
+						Tags = buildTags(member.Tags),
+						Parameters = pList,
+						ReturnType = member.ReturnType.Name,
+					}
 				elseif mType == "Event" then
-					newMember.Parameters = {}
-					for c,param in ipairs(member.Parameters) do
-						table.insert(newMember.Parameters,{Name = param.Name, Type = param.Type.Name})
+					local params = member.Parameters
+					local pList = {}
+					for pi = 1, #params do
+						local p = params[pi]
+						pList[pi] = {Name = p.Name, Type = p.Type.Name}
 					end
-					table.insert(newClass.Events,newMember)
+					nEvents = nEvents + 1
+					events[nEvents] = {
+						Name = member.Name,
+						Class = className,
+						Security = member.Security,
+						Tags = buildTags(member.Tags),
+						Parameters = pList,
+					}
 				end
+				-- Callbacks and other types silently ignored (same as before)
 			end
 
-			classes[class.Name] = newClass
+			classes[className] = {
+				Name = className,
+				Superclass = class.Superclass,
+				Properties = props,
+				Functions = funcs,
+				Events = events,
+				Callbacks = {},
+				Tags = buildTags(class.Tags),
+			}
 		end
 
 		for _,class in pairs(classes) do
 			class.Superclass = classes[class.Superclass]
 		end
 
-		for _,enum in ipairs(api.Enums) do
-			local newEnum = {}
-			newEnum.Name = enum.Name
-			newEnum.Items = {}
-			newEnum.Tags = {}
-
-			if enum.Tags then for c,tag in ipairs(enum.Tags) do newEnum.Tags[tag] = true end end
-			for __,item in ipairs(enum.Items) do
-				local newItem = {}
-				newItem.Name = item.Name
-				newItem.Value = item.Value
-				table.insert(newEnum.Items,newItem)
+		-- Process enums with yields
+		local apiEnums = api.Enums
+		for ei = 1, #apiEnums do
+			if clock() - parseStart > 0.015 then
+				task.wait()
+				parseStart = clock()
 			end
 
-			enums[enum.Name] = newEnum
+			local enum = apiEnums[ei]
+			local items = enum.Items
+			local newItems = {}
+			for ii = 1, #items do
+				local item = items[ii]
+				newItems[ii] = {Name = item.Name, Value = item.Value}
+			end
+
+			enums[enum.Name] = {
+				Name = enum.Name,
+				Items = newItems,
+				Tags = buildTags(enum.Tags),
+			}
 		end
 
+		-- getMember with result caching to avoid repeated superclass walks + sorts
+		local getMemberCache = {}
 		local function getMember(class,member)
 			if not classes[class] or not classes[class][member] then return end
-			local result = {}
 
+			local cacheKey = class .. "\0" .. member
+			local cached = getMemberCache[cacheKey]
+			if cached then return cached end
+
+			local result = {}
+			local n = 0
 			local currentClass = classes[class]
 			while currentClass do
-				for _,entry in pairs(currentClass[member]) do
-					result[#result+1] = entry
+				local entries = currentClass[member]
+				for i = 1, #entries do
+					n = n + 1
+					result[n] = entries[i]
 				end
 				currentClass = currentClass.Superclass
 			end
 
 			table.sort(result,function(a,b) return a.Name < b.Name end)
+			getMemberCache[cacheKey] = result
 			return result
 		end
 
@@ -873,66 +925,91 @@ Main = (function()
 		local parseStart = clock()
 		local classes,enums = {},{}
 
+		-- Capitalize cache: RMD has ~20 unique attr names repeated thousands of times
+		local capCache = {}
+		local string_char, string_sub, string_byte = string.char, string.sub, string.byte
 		local function capitalize(name)
-			local firstByte = name:byte(1)
+			local cached = capCache[name]
+			if cached then return cached end
+			local firstByte = string_byte(name, 1)
 			if firstByte and firstByte >= 97 and firstByte <= 122 then
-				return string.char(firstByte - 32) .. name:sub(2)
+				cached = string_char(firstByte - 32) .. string_sub(name, 2)
+			else
+				cached = name
 			end
-			return name
+			capCache[name] = cached
+			return cached
 		end
 
-		for _,class in ipairs(classList) do
+		-- Helper: extract key/value pairs from a Properties XML node's children
+		local function extractProps(propsChildren, into)
+			for pi = 1, #propsChildren do
+				local prop = propsChildren[pi]
+				local attrs = prop.attrs
+				if attrs then
+					local ch1 = prop.children[1]
+					if ch1 then
+						into[capitalize(attrs.name)] = ch1.text
+					end
+				end
+			end
+		end
+
+		-- Constant strings cached outside loop
+		local STR_Properties = "Properties"
+		local STR_RMDProps = "ReflectionMetadataProperties"
+		local STR_RMDFuncs = "ReflectionMetadataFunctions"
+		local STR_RMDMember = "ReflectionMetadataMember"
+		local STR_RMDEnumItem = "ReflectionMetadataEnumItem"
+
+		for ci = 1, #classList do
 			if clock() - parseStart > 0.015 then
 				task.wait()
 				parseStart = clock()
 			end
+
+			local class = classList[ci]
+			local classChildren = class.children
 			local className = ""
-			for _,child in ipairs(class.children) do
-				if child.tag == "Properties" then
+
+			for chi = 1, #classChildren do
+				local child = classChildren[chi]
+				if child.tag == STR_Properties then
 					local data = {Properties = {}, Functions = {}}
-					local props = child.children
-					for _,prop in ipairs(props) do
-						local name = capitalize(prop.attrs.name)
-						data[name] = prop.children[1].text
-					end
+					extractProps(child.children, data)
 					className = data.Name
 					classes[className] = data
-				elseif child.attrs.class == "ReflectionMetadataProperties" then
-					local members = child.children
-					for _,member in ipairs(members) do
-						if member.attrs.class == "ReflectionMetadataMember" then
-							local data = {}
-							if member.children[1].tag == "Properties" then
-								local props = member.children[1].children
-								for _,prop in ipairs(props) do
-									if prop.attrs then
-										local name = capitalize(prop.attrs.name)
-										data[name] = prop.children[1].text
+				else
+					local childClass = child.attrs.class
+					if childClass == STR_RMDProps then
+						local members = child.children
+						for mi = 1, #members do
+							local member = members[mi]
+							if member.attrs.class == STR_RMDMember then
+								local ch1 = member.children[1]
+								if ch1 and ch1.tag == STR_Properties then
+									local data = {}
+									extractProps(ch1.children, data)
+									if data.PropertyOrder then
+										local orders = propertyOrders[className]
+										if not orders then orders = {} propertyOrders[className] = orders end
+										orders[data.Name] = tonumber(data.PropertyOrder)
 									end
+									classes[className].Properties[data.Name] = data
 								end
-								if data.PropertyOrder then
-									local orders = propertyOrders[className]
-									if not orders then orders = {} propertyOrders[className] = orders end
-									orders[data.Name] = tonumber(data.PropertyOrder)
-								end
-								classes[className].Properties[data.Name] = data
 							end
 						end
-					end
-				elseif child.attrs.class == "ReflectionMetadataFunctions" then
-					local members = child.children
-					for _,member in ipairs(members) do
-						if member.attrs.class == "ReflectionMetadataMember" then
-							local data = {}
-							if member.children[1].tag == "Properties" then
-								local props = member.children[1].children
-								for _,prop in ipairs(props) do
-									if prop.attrs then
-										local name = capitalize(prop.attrs.name)
-										data[name] = prop.children[1].text
-									end
+					elseif childClass == STR_RMDFuncs then
+						local members = child.children
+						for mi = 1, #members do
+							local member = members[mi]
+							if member.attrs.class == STR_RMDMember then
+								local ch1 = member.children[1]
+								if ch1 and ch1.tag == STR_Properties then
+									local data = {}
+									extractProps(ch1.children, data)
+									classes[className].Functions[data.Name] = data
 								end
-								classes[className].Functions[data.Name] = data
 							end
 						end
 					end
@@ -940,30 +1017,26 @@ Main = (function()
 			end
 		end
 
-		for _,enum in ipairs(enumList) do
+		for ei = 1, #enumList do
 			if clock() - parseStart > 0.015 then
 				task.wait()
 				parseStart = clock()
 			end
+			local enum = enumList[ei]
+			local enumChildren = enum.children
 			local enumName = ""
-			for _,child in ipairs(enum.children) do
-				if child.tag == "Properties" then
+			for chi = 1, #enumChildren do
+				local child = enumChildren[chi]
+				if child.tag == STR_Properties then
 					local data = {Items = {}}
-					local props = child.children
-					for _,prop in ipairs(props) do
-						local name = capitalize(prop.attrs.name)
-						data[name] = prop.children[1].text
-					end
+					extractProps(child.children, data)
 					enumName = data.Name
 					enums[enumName] = data
-				elseif child.attrs.class == "ReflectionMetadataEnumItem" then
-					local data = {}
-					if child.children[1].tag == "Properties" then
-						local props = child.children[1].children
-						for _,prop in ipairs(props) do
-							local name = capitalize(prop.attrs.name)
-							data[name] = prop.children[1].text
-						end
+				elseif child.attrs.class == STR_RMDEnumItem then
+					local ch1 = child.children[1]
+					if ch1 and ch1.tag == STR_Properties then
+						local data = {}
+						extractProps(ch1.children, data)
 						enums[enumName].Items[data.Name] = data
 					end
 				end
@@ -1464,36 +1537,38 @@ Main = (function()
 				intro.SetProgress("Fetching API, LOL STILL DOWNlOADING? bad wifi xD",0.475)
 			end
 		)
-		Lib.FastWait()
+		task.wait()
 		intro.SetProgress("Fetching RMD",0.5)
 		RMD = Main.FetchRMD()
-		Lib.FastWait()
+		task.wait()
 
-		-- Save external deps locally if needed
+		-- Save external deps locally if needed (non-blocking, fire-and-forget)
 		if Main.Elevated and env.writefile and not Main.LocalDepsUpToDate() then
-			env.writefile("axon/deps_version.dat",Main.ClientVersion.."\n"..Main.RobloxVersion)
-			env.writefile("axon/rbx_api.dat",Main.RawAPI)
-			env.writefile("axon/rbx_rmd.dat",Main.RawRMD)
+			task.spawn(function()
+				env.writefile("axon/deps_version.dat",Main.ClientVersion.."\n"..Main.RobloxVersion)
+				env.writefile("axon/rbx_api.dat",Main.RawAPI)
+				env.writefile("axon/rbx_rmd.dat",Main.RawRMD)
+			end)
 		end
 
 		-- Load other modules
 		intro.SetProgress("Loading Modules",0.75)
 		Main.AppControls.Lib.InitDeps(Main.GetInitDeps()) -- Missing deps now available
 		Main.LoadModules()
-		Lib.FastWait()
+		task.wait()
 
-		-- Init other modules
+		-- Init other modules – yield between each to keep the UI responsive
 		intro.SetProgress("Initializing Modules",0.8)
-		Explorer.Init()
-		Properties.Init()
-		ScriptViewer.Init()
-		ScriptTree.Init()
-		Console.Init()
-		SaveInstance.Init()
-		ModelViewer.Init()
-		SettingsWindow.Init()
-		RemoteTree.Init()
-		AssetTree.Init()
+		Explorer.Init()  task.wait()
+		Properties.Init()  task.wait()
+		ScriptViewer.Init()  task.wait()
+		ScriptTree.Init()  task.wait()
+		Console.Init()  task.wait()
+		SaveInstance.Init()  task.wait()
+		ModelViewer.Init()  task.wait()
+		SettingsWindow.Init()  task.wait()
+		RemoteTree.Init()  task.wait()
+		AssetTree.Init()  task.wait()
 		ScriptSearch.Init()
 
 		if env.readfile and listfiles then
@@ -1513,12 +1588,12 @@ Main = (function()
 					moduleData.PluginData.Name = pluginName
 					moduleData.PluginData.FriendlyName = pluginFriendlyName
 
-					table.insert(Main.Plugins, moduleData)
+					Main.Plugins[#Main.Plugins + 1] = moduleData
 				end
 			end
 		end
 
-		Lib.FastWait()
+		task.wait()
 
 		-- Done
 		intro.SetProgress("Complete",1)
