@@ -1301,8 +1301,6 @@ Main = (function()
 
 		Main.CreateApp({Name = "Properties", IconMap = Main.LargeIcons, Icon = "Properties", Open = true, Window = Properties.Window})
 
-		Main.CreateApp({Name = "Script Tree", IconMap = Main.LargeIcons, Icon = "Script_Viewer", Window = ScriptTree.Window})
-
 		local cptsOnMouseClick = nil
 		Main.CreateApp({Name = "Click part to select", IconMap = Explorer.ClassIcons, Icon = "SelectionBox", OnClick = function(callback)
 			if callback then

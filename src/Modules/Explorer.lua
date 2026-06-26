@@ -286,7 +286,7 @@ local function main()
 	Explorer.InitRenameBox = function()
 		renameBox = create({{1,"TextBox",{BackgroundColor3=Color3.new(0.17647059261799,0.17647059261799,0.17647059261799),BorderColor3=Color3.new(0.062745101749897,0.51764708757401,1),BorderMode=2,ClearTextOnFocus=false,Font=3,Name="RenameBox",PlaceholderColor3=Color3.new(0.69803923368454,0.69803923368454,0.69803923368454),Position=UDim2.new(0,26,0,2),Size=UDim2.new(0,200,0,16),Text="",TextColor3=Color3.new(1,1,1),TextSize=14,TextXAlignment=0,Visible=false,ZIndex=2}}})
 
-		renameBox.Parent = Explorer.Window.GuiElems.Content.List
+		renameBox.Parent = treeFrame
 
 		renameBox.FocusLost:Connect(function()
 			if not renamingNode then return end
@@ -340,11 +340,11 @@ local function main()
 			if scrollV.Gui.Visible and scrollH.Gui.Visible then
 				scrollV.Gui.Size = UDim2.new(0,16,1,-39)
 				scrollH.Gui.Size = UDim2.new(1,-16,0,16)
-				Explorer.Window.GuiElems.Content.ScrollCorner.Visible = true
+				Explorer.GuiElems.ScrollCorner.Visible = true
 			else
 				scrollV.Gui.Size = UDim2.new(0,16,1,-23)
 				scrollH.Gui.Size = UDim2.new(1,0,0,16)
-				Explorer.Window.GuiElems.Content.ScrollCorner.Visible = false
+				Explorer.GuiElems.ScrollCorner.Visible = false
 			end
 
 			Explorer.Index = scrollV.Index
@@ -2446,6 +2446,87 @@ return search]==]
 		end
 	end
 
+	-- Tab system: the Explorer window hosts switchable pages (Explorer, Script Tree, ...)
+	Explorer.Tabs = {}
+	Explorer.TabOrder = {}
+	Explorer.ActiveTab = nil
+
+	Explorer.LayoutTabs = function()
+		local x = 0
+		local textServ = service.TextService
+		for i = 1,#Explorer.TabOrder do
+			local t = Explorer.Tabs[Explorer.TabOrder[i]]
+			local w = textServ:GetTextSize(t.Name,14,Enum.Font.SourceSans,Vector2.new(9999,Explorer.TabHeight or 24)).X + 22
+			t.Button.Position = UDim2.new(0,x,0,0)
+			t.Button.Size = UDim2.new(0,w,1,0)
+			x = x + w
+		end
+	end
+
+	Explorer.SetActiveTab = function(name)
+		local newTab = Explorer.Tabs[name]
+		if not newTab then return end
+
+		local prev = Explorer.ActiveTab
+		if prev and prev ~= name then
+			local p = Explorer.Tabs[prev]
+			if p then
+				p.Page.Visible = false
+				p.Button.BackgroundTransparency = 1
+				p.Button.TextColor3 = Settings.Theme.PlaceholderText
+				p.Accent.Visible = false
+				if p.Handlers.OnHide then p.Handlers.OnHide() end
+			end
+		end
+
+		Explorer.ActiveTab = name
+		newTab.Page.Visible = true
+		newTab.Button.BackgroundColor3 = Settings.Theme.Main1
+		newTab.Button.BackgroundTransparency = 0
+		newTab.Button.TextColor3 = Settings.Theme.Text
+		newTab.Accent.Visible = true
+		if Explorer.Window then Explorer.Window:SetTitle(name) end
+		if prev ~= name and newTab.Handlers.OnShow then newTab.Handlers.OnShow() end
+	end
+
+	Explorer.AddTab = function(name, page, handlers)
+		local btn = create({
+			{1,"TextButton",{AutoButtonColor=false,BackgroundColor3=Settings.Theme.Main1,BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="Tab",Size=UDim2.new(0,80,1,0),Text=name,TextColor3=Settings.Theme.PlaceholderText,TextSize=14,}},
+			{2,"Frame",{AnchorPoint=Vector2.new(0,1),BackgroundColor3=Color3.fromRGB(0,170,255),BorderSizePixel=0,Name="Accent",Parent={1},Position=UDim2.new(0,0,1,0),Size=UDim2.new(1,0,0,2),Visible=false,}},
+		})
+		btn.Parent = Explorer.TabBar
+
+		local tab = {Name = name, Page = page, Button = btn, Accent = btn.Accent, Handlers = handlers or {}}
+		Explorer.Tabs[name] = tab
+		Explorer.TabOrder[#Explorer.TabOrder + 1] = name
+
+		page.Parent = Explorer.TabContent
+
+		btn.MouseEnter:Connect(function()
+			if Explorer.ActiveTab ~= name then btn.BackgroundTransparency = 0 btn.BackgroundColor3 = Settings.Theme.Button end
+		end)
+		btn.MouseLeave:Connect(function()
+			if Explorer.ActiveTab ~= name then btn.BackgroundTransparency = 1 end
+		end)
+		btn.MouseButton1Click:Connect(function() Explorer.SetActiveTab(name) end)
+
+		Explorer.LayoutTabs()
+
+		if not Explorer.ActiveTab then
+			-- Visually activate the first tab now; its OnShow runs when the window opens.
+			Explorer.ActiveTab = name
+			page.Visible = true
+			btn.BackgroundColor3 = Settings.Theme.Main1
+			btn.BackgroundTransparency = 0
+			btn.TextColor3 = Settings.Theme.Text
+			tab.Accent.Visible = true
+		else
+			page.Visible = false
+		end
+
+		return tab
+	end
+
 	Explorer.Init = function()
 		Explorer.LegacyClassIcons = Lib.IconMap.newLinear("rbxasset://textures/ClassImages.PNG", 16,16)
 		if Settings.ClassIcon ~= nil and Settings.ClassIcon ~= "Old" then
@@ -2524,14 +2605,29 @@ return search]==]
 		local window = Lib.Window.new()
 		Explorer.Window = window
 		window:SetTitle("Explorer")
-		window.GuiElems.Line.Position = UDim2.new(0,0,0,22)
+
+		-- Tab strip + page host (Explorer and Script Tree live here as tabs)
+		local TAB_H = 24
+		Explorer.TabHeight = TAB_H
+		local tabBar = createSimple("Frame",{Name="TabBar",BackgroundColor3=Settings.Theme.Main2,BorderSizePixel=0,Size=UDim2.new(1,0,0,TAB_H)})
+		local tabContent = createSimple("Frame",{Name="TabContent",BackgroundTransparency=1,Position=UDim2.new(0,0,0,TAB_H),Size=UDim2.new(1,0,1,-TAB_H)})
+		tabBar.Parent = window.GuiElems.Content
+		tabContent.Parent = window.GuiElems.Content
+		Explorer.TabBar = tabBar
+		Explorer.TabContent = tabContent
+		window.GuiElems.Line.Position = UDim2.new(0,0,0,TAB_H)
+
+		-- Explorer's own page
+		local expPage = createSimple("Frame",{Name="ExplorerPage",BackgroundTransparency=1,Size=UDim2.new(1,0,1,0)})
+		expPage.Parent = tabContent
+		Explorer.GuiElems.ScrollCorner = explorerItems.ScrollCorner
 
 		Explorer.InitEntryTemplate()
-		toolBar.Parent = window.GuiElems.Content
-		treeFrame.Parent = window.GuiElems.Content
-		explorerItems.ScrollCorner.Parent = window.GuiElems.Content
-		scrollV.Gui.Parent = window.GuiElems.Content
-		scrollH.Gui.Parent = window.GuiElems.Content
+		toolBar.Parent = expPage
+		treeFrame.Parent = expPage
+		explorerItems.ScrollCorner.Parent = expPage
+		scrollV.Gui.Parent = expPage
+		scrollH.Gui.Parent = expPage
 
 		-- Init stuff that requires the window
 		Explorer.InitRenameBox()
@@ -2539,27 +2635,36 @@ return search]==]
 		Explorer.InitDelCleaner()
 		selection.Changed:Connect(Explorer.UpdateSelectionVisuals)
 
-		-- Window events
-		window.GuiElems.Main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-			if Explorer.Active then
+		Explorer.AddTab("Explorer", expPage, {
+			OnShow = function()
+				Explorer.Active = true
 				Explorer.UpdateView()
+				Explorer.Update()
 				Explorer.Refresh()
-			end
+			end,
+			OnHide = function() Explorer.Active = false end,
+			OnResize = function()
+				if Explorer.Active then Explorer.UpdateView() Explorer.Refresh() end
+			end,
+		})
+
+		-- Window events drive whichever tab is active
+		local function showActive()
+			local t = Explorer.ActiveTab and Explorer.Tabs[Explorer.ActiveTab]
+			if t and t.Handlers.OnShow then t.Handlers.OnShow() end
+		end
+		local function hideActive()
+			local t = Explorer.ActiveTab and Explorer.Tabs[Explorer.ActiveTab]
+			if t and t.Handlers.OnHide then t.Handlers.OnHide() end
+		end
+		window.GuiElems.Main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			local t = Explorer.ActiveTab and Explorer.Tabs[Explorer.ActiveTab]
+			if t and t.Handlers.OnResize then t.Handlers.OnResize() end
 		end)
-		window.OnActivate:Connect(function()
-			Explorer.Active = true
-			Explorer.UpdateView()
-			Explorer.Update()
-			Explorer.Refresh()
-		end)
-		window.OnRestore:Connect(function()
-			Explorer.Active = true
-			Explorer.UpdateView()
-			Explorer.Update()
-			Explorer.Refresh()
-		end)
-		window.OnDeactivate:Connect(function() Explorer.Active = false end)
-		window.OnMinimize:Connect(function() Explorer.Active = false end)
+		window.OnActivate:Connect(showActive)
+		window.OnRestore:Connect(showActive)
+		window.OnDeactivate:Connect(hideActive)
+		window.OnMinimize:Connect(hideActive)
 
 		-- Settings
 		autoUpdateSearch = Settings.Explorer.AutoUpdateSearch

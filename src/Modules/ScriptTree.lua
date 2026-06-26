@@ -49,7 +49,7 @@ local function main()
 	local LINE_COLOR = Color3.fromRGB(72, 72, 72)
 
 	-- State
-	local window, toolBar, treeFrame, scrollV
+	local toolBar, treeFrame, scrollV
 	local searchBox, countLabel
 	local context, clickSys
 	local listEntries = {}
@@ -186,7 +186,7 @@ local function main()
 		scrollV.TotalSpace = #tree
 		scrollV.Gui.Visible = #tree > maxNodes
 
-		local newSize = UDim2.new(1, scrollV.Gui.Visible and -16 or 0, 1, 0)
+		local newSize = UDim2.new(1, scrollV.Gui.Visible and -16 or 0, 1, -23)
 		if treeFrame.Size ~= newSize then
 			treeFrame.Size = newSize
 		end
@@ -395,7 +395,7 @@ local function main()
 		rebuildDebounce = true
 		Lib.FastWait(0.3)
 		rebuildDebounce = false
-		if window:IsVisible() then ScriptTree.Rebuild() end
+		if ScriptTree.Active then ScriptTree.Rebuild() end
 	end
 
 	-- Expand / collapse an entire subtree
@@ -580,21 +580,20 @@ local function main()
 		scrollV = Lib.ScrollBar.new()
 		scrollV.WheelIncrement = 3
 		scrollV.Gui.Position = UDim2.new(1, -16, 0, 23)
+		scrollV.Gui.Size = UDim2.new(0, 16, 1, -23)
 		scrollV:SetScrollFrame(treeFrame)
 		scrollV.Scrolled:Connect(function()
 			ScriptTree.Index = scrollV.Index
 			ScriptTree.Refresh()
 		end)
 
-		window = Lib.Window.new()
-		ScriptTree.Window = window
-		window:SetTitle("Script Tree")
-		window:Resize(300, 400)
-		window.GuiElems.Line.Position = UDim2.new(0, 0, 0, 22)
-
-		toolBar.Parent = window.GuiElems.Content
-		treeFrame.Parent = window.GuiElems.Content
-		scrollV.Gui.Parent = window.GuiElems.Content
+		-- Hosted as a tab inside the Explorer window instead of its own window.
+		local page = createSimple("Frame", {Name = "ScriptTreePage", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0)})
+		ScriptTree.Page = page
+		ScriptTree.Window = Explorer.Window
+		toolBar.Parent = page
+		treeFrame.Parent = page
+		scrollV.Gui.Parent = page
 
 		toolBar.Refresh.MouseButton1Click:Connect(function() ScriptTree.Rebuild() end)
 
@@ -603,24 +602,13 @@ local function main()
 		ScriptTree.InitSearch()
 		ScriptTree.SetupConnections()
 
-		window.GuiElems.Main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-			if ScriptTree.Active then
-				ScriptTree.UpdateView()
-				ScriptTree.Refresh()
-			end
-		end)
-		window.OnActivate:Connect(function()
-			ScriptTree.Active = true
-			ScriptTree.Rebuild()
-		end)
-		window.OnRestore:Connect(function()
-			ScriptTree.Active = true
-			ScriptTree.Rebuild()
-		end)
-		window.OnDeactivate:Connect(function() ScriptTree.Active = false end)
-		window.OnMinimize:Connect(function() ScriptTree.Active = false end)
+		Explorer.AddTab("Script Tree", page, {
+			OnShow = function() ScriptTree.Active = true ScriptTree.Rebuild() end,
+			OnHide = function() ScriptTree.Active = false end,
+			OnResize = function() if ScriptTree.Active then ScriptTree.UpdateView() ScriptTree.Refresh() end end,
+		})
 
-		-- Initial build (so it's populated the first time it's opened)
+		-- Initial build (so it's populated the first time the tab is opened)
 		ScriptTree.Build()
 		ScriptTree.Flatten()
 	end
