@@ -314,6 +314,12 @@ local function main()
 	ScriptTree.SetSelected = function(node)
 		selectedNode = node
 		ScriptTree.Refresh()
+		if node and node.Obj and Explorer and Explorer.Selection and nodes then
+			local expNode = nodes[node.Obj]
+			if expNode then
+				Explorer.Selection:Set(expNode)
+			end
+		end
 	end
 
 	ScriptTree.Refresh = function()

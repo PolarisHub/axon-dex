@@ -315,6 +315,12 @@ local function main()
 	RemoteTree.SetSelected = function(node)
 		selectedNode = node
 		RemoteTree.Refresh()
+		if node and node.Obj and Explorer and Explorer.Selection and nodes then
+			local expNode = nodes[node.Obj]
+			if expNode then
+				Explorer.Selection:Set(expNode)
+			end
+		end
 	end
 
 	RemoteTree.Refresh = function()
