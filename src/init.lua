@@ -450,7 +450,7 @@ Main = (function()
 
 		local AdvancedDecompilerCache
 		pcall(function()
-			AdvancedDecompilerCache = loadstring(game:HttpGet("https://raw.githubusercontent.com/"..Main.GitName.."/Advanced-Decompiler-V3/refs/heads/main/init.lua"))()
+			AdvancedDecompilerCache = loadstring(game:HttpGet("https://raw.githubusercontent.com/AZYsGithub/Advanced-Decompiler-V3/refs/heads/main/init.lua"))()
 		end)
 
 		local konstant_last_call = 0
