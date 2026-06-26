@@ -415,51 +415,53 @@ local function main()
 		for i = 1,#sList do
 			local node = sList[i]
 			local obj = node.Obj
-			local class = node.Class
-			if not class then class = obj.ClassName node.Class = class end
+			if obj then
+				local class = node.Class
+				if not class then class = obj.ClassName node.Class = class end
 
-			local apiClass = Classes[class]
-			while apiClass do
-				local APIClassName = apiClass.Name
-				if not foundClasses[APIClassName] then
-					local apiProps = indexableProps[APIClassName]
-					if not apiProps then apiProps = Properties.GetIndexableProps(obj,apiClass) indexableProps[APIClassName] = apiProps end
+				local apiClass = Classes[class]
+				while apiClass do
+					local APIClassName = apiClass.Name
+					if not foundClasses[APIClassName] then
+						local apiProps = indexableProps[APIClassName]
+						if not apiProps then apiProps = Properties.GetIndexableProps(obj,apiClass) indexableProps[APIClassName] = apiProps end
 
-					for i = 1,#apiProps do
-						local prop = apiProps[i]
-						local tags = prop.Tags
-						if (not tags.Deprecated or showDeprecated) and (not tags.Hidden or showHidden) then
-							props[propCount] = prop
-							propCount = propCount + 1
+						for i = 1,#apiProps do
+							local prop = apiProps[i]
+							local tags = prop.Tags
+							if (not tags.Deprecated or showDeprecated) and (not tags.Hidden or showHidden) then
+								props[propCount] = prop
+								propCount = propCount + 1
+							end
 						end
+						foundClasses[APIClassName] = true
 					end
-					foundClasses[APIClassName] = true
+
+					local classList = classLists[APIClassName]
+					if not classList then classList = {} classLists[APIClassName] = classList end
+					classList[#classList+1] = obj
+
+					apiClass = apiClass.Superclass
 				end
 
-				local classList = classLists[APIClassName]
-				if not classList then classList = {} classLists[APIClassName] = classList end
-				classList[#classList+1] = obj
-
-				apiClass = apiClass.Superclass
-			end
-
-			if showingAttrs and attrCount < maxAttrs then
-				local attrs = getAttributes(obj)
-				for name,val in pairs(attrs) do
-					local typ = typeof(val)
-					if not foundAttrs[name] then
-						local category = (typ == "Instance" and "Class") or (typ == "EnumItem" and "Enum") or "Other"
-						local valType = {Name = typeNameConvert[typ] or typ, Category = category}
-						local attrProp = {IsAttribute = true, Name = "ATTR_"..name, AttributeName = name, DisplayName = name, Class = "Instance", ValueType = valType, Category = "Attributes", Tags = {}}
-						props[propCount] = attrProp
-						propCount = propCount + 1
-						attrCount = attrCount + 1
-						foundAttrs[name] = {typ,attrProp}
-						if attrCount == maxAttrs then break end
-					elseif foundAttrs[name][1] ~= typ then
-						foundAttrs[name][2].MultiType = true
-						foundAttrs[name][2].Tags.ReadOnly = true
-						foundAttrs[name][2].ValueType = {Name = "string"}
+				if showingAttrs and attrCount < maxAttrs then
+					local attrs = getAttributes(obj)
+					for name,val in pairs(attrs) do
+						local typ = typeof(val)
+						if not foundAttrs[name] then
+							local category = (typ == "Instance" and "Class") or (typ == "EnumItem" and "Enum") or "Other"
+							local valType = {Name = typeNameConvert[typ] or typ, Category = category}
+							local attrProp = {IsAttribute = true, Name = "ATTR_"..name, AttributeName = name, DisplayName = name, Class = "Instance", ValueType = valType, Category = "Attributes", Tags = {}}
+							props[propCount] = attrProp
+							propCount = propCount + 1
+							attrCount = attrCount + 1
+							foundAttrs[name] = {typ,attrProp}
+							if attrCount == maxAttrs then break end
+						elseif foundAttrs[name][1] ~= typ then
+							foundAttrs[name][2].MultiType = true
+							foundAttrs[name][2].Tags.ReadOnly = true
+							foundAttrs[name][2].ValueType = {Name = "string"}
+						end
 					end
 				end
 			end
@@ -489,9 +491,118 @@ local function main()
 
 		Properties.Update()
 		Properties.Refresh()
+		Properties.UpdateAssetPreview()
+	end
+
+	local previewPanel, imagePreview, soundPreview, meshPreview, detailsFrame
+	local assetIdLabel, typeLabel, copyIdBtn, openBrowserBtn, previewSound
+	local previewPanelVisible = false
+	local currentAssetId, currentAssetType
+
+	local function safeGet(obj, prop)
+		local s, v = pcall(function() return obj[prop] end)
+		return s and v or nil
+	end
+
+	local function parseAssetId(val)
+		if typeof(val) == "string" then
+			local id = val:match("rbxassetid://(%d+)") or val:match("asset/%?id=(%d+)") or val:match("id=(%d+)")
+			if id then return id end
+			local num = val:match("^(%d+)$")
+			if num then return num end
+		elseif typeof(val) == "number" then
+			return tostring(val)
+		end
+		return nil
+	end
+
+	local function getAssetUrl(obj)
+		if obj:IsA("Decal") or obj:IsA("Texture") then
+			return safeGet(obj, "Texture"), "Images"
+		elseif obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+			return safeGet(obj, "Image"), "Images"
+		elseif obj:IsA("Sky") then
+			return safeGet(obj, "SkyboxBk"), "Images"
+		elseif obj:IsA("MeshPart") then
+			return safeGet(obj, "MeshId"), "Meshes"
+		elseif obj:IsA("SpecialMesh") then
+			return safeGet(obj, "MeshId"), "Meshes"
+		elseif obj:IsA("Sound") then
+			return safeGet(obj, "SoundId"), "Sounds"
+		elseif obj:IsA("Animation") then
+			return safeGet(obj, "AnimationId"), "Animations"
+		elseif obj:IsA("VideoFrame") then
+			return safeGet(obj, "Video"), "Videos"
+		end
+		return nil
+	end
+
+	Properties.UpdateAssetPreview = function()
+		if not previewPanel then return end
+		local sList = Explorer.Selection.List
+		local selectedItem = sList[1]
+		local assetId, assetType
+
+		if selectedItem then
+			if selectedItem.IsAsset then
+				assetId = selectedItem.AssetId
+				assetType = selectedItem.AssetType
+			elseif selectedItem.Obj then
+				local url, typ = getAssetUrl(selectedItem.Obj)
+				if url then
+					assetId = parseAssetId(url)
+					assetType = typ
+				end
+			end
+		end
+
+		if previewSound then
+			previewSound:Stop()
+		end
+
+		if assetId and assetType then
+			currentAssetId = assetId
+			currentAssetType = assetType
+
+			assetIdLabel.Text = "Asset ID: " .. assetId
+			typeLabel.Text = "Type: " .. assetType
+
+			imagePreview.Visible = false
+			soundPreview.Visible = false
+			meshPreview.Visible = false
+
+			if assetType == "Images" then
+				imagePreview.Image = "rbxassetid://" .. assetId
+				imagePreview.Visible = true
+			elseif assetType == "Sounds" then
+				soundPreview.Visible = true
+			elseif assetType == "Meshes" then
+				meshPreview.Text = "[3D Mesh]"
+				meshPreview.Visible = true
+			else
+				meshPreview.Text = "[" .. assetType .. "]"
+				meshPreview.Visible = true
+			end
+
+			previewPanelVisible = true
+			previewPanel.Position = UDim2.new(0, 0, 1, -140)
+			previewPanel.Visible = true
+		else
+			currentAssetId = nil
+			currentAssetType = nil
+			previewPanelVisible = false
+			previewPanel.Visible = false
+		end
+
+		Properties.UpdateView()
 	end
 
 	Properties.UpdateView = function()
+		local bottomOffset = (scrollH.Gui.Visible and -39 or -23)
+		if previewPanelVisible then
+			bottomOffset = bottomOffset - 140
+		end
+
 		local maxEntries = math.ceil(propsFrame.AbsoluteSize.Y / 23)
 		local maxX = propsFrame.AbsoluteSize.X
 		local totalWidth = Properties.ViewWidth + Properties.MinInputWidth
@@ -505,7 +616,7 @@ local function main()
 		scrollH.Gui.Visible = Settings.Properties.ScaleType == 0 and totalWidth > maxX
 
 		local oldSize = propsFrame.Size
-		propsFrame.Size = UDim2.new(1,(scrollV.Gui.Visible and -16 or 0),1,(scrollH.Gui.Visible and -39 or -23))
+		propsFrame.Size = UDim2.new(1,(scrollV.Gui.Visible and -16 or 0),1,bottomOffset)
 		if oldSize ~= propsFrame.Size then
 			Properties.UpdateView()
 		else
@@ -513,14 +624,18 @@ local function main()
 			scrollH:Update()
 
 			if scrollV.Gui.Visible and scrollH.Gui.Visible then
-				scrollV.Gui.Size = UDim2.new(0,16,1,-39)
+				scrollV.Gui.Size = UDim2.new(0,16,1,bottomOffset - 16)
 				scrollH.Gui.Size = UDim2.new(1,-16,0,16)
 				Properties.Window.GuiElems.Content.ScrollCorner.Visible = true
 			else
-				scrollV.Gui.Size = UDim2.new(0,16,1,-23)
+				scrollV.Gui.Size = UDim2.new(0,16,1,bottomOffset)
 				scrollH.Gui.Size = UDim2.new(1,0,0,16)
 				Properties.Window.GuiElems.Content.ScrollCorner.Visible = false
 			end
+			-- Re-position components
+			scrollV.Gui.Position = UDim2.new(1,-16,0,23)
+			scrollH.Gui.Position = UDim2.new(0,0,1,bottomOffset)
+			Properties.Window.GuiElems.Content.ScrollCorner.Position = UDim2.new(1,-16,1,bottomOffset)
 
 			Properties.Index = scrollV.Index
 		end
@@ -1718,6 +1833,154 @@ local function main()
 		Lib.ViewportTextBox.convert(inputTextBox)
 	end
 
+	Properties.InitAssetPreview = function()
+		previewPanel = createSimple("Frame", {
+			Name = "AssetPreviewPanel",
+			BackgroundColor3 = Color3.fromRGB(18, 18, 20),
+			BackgroundTransparency = 0.1,
+			BorderSizePixel = 0,
+			Position = UDim2.new(0, 0, 1, -140),
+			Size = UDim2.new(1, 0, 0, 140),
+			Visible = false,
+			Parent = Properties.Window.GuiElems.Content
+		})
+
+		-- Top divider line
+		createSimple("Frame", {
+			Name = "TopLine",
+			BackgroundColor3 = Color3.fromRGB(50, 50, 55),
+			BorderSizePixel = 0,
+			Position = UDim2.new(0, 0, 0, 0),
+			Size = UDim2.new(1, 0, 0, 1),
+			Parent = previewPanel
+		})
+
+		-- Left area container for visual preview
+		local previewContainer = createSimple("Frame", {
+			Name = "PreviewContainer",
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, 5, 0, 5),
+			Size = UDim2.new(0, 110, 1, -10),
+			Parent = previewPanel
+		})
+
+		imagePreview = createSimple("ImageLabel", {
+			Name = "ImagePreview",
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, 0, 0, 0),
+			Size = UDim2.new(1, 0, 1, 0),
+			ScaleType = Enum.ScaleType.Fit,
+			Visible = false,
+			Parent = previewContainer
+		})
+
+		soundPreview = createSimple("Frame", {
+			Name = "SoundPreview",
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, 0, 0, 0),
+			Size = UDim2.new(1, 0, 1, 0),
+			Visible = false,
+			Parent = previewContainer
+		})
+
+		local playBtn = Lib.Button.new()
+		playBtn.Text = "Play"
+		playBtn.Size = UDim2.new(1, 0, 0, 25)
+		playBtn.Position = UDim2.new(0, 0, 0, 20)
+		playBtn.OnClick:Connect(function()
+			if currentAssetId then
+				if previewSound then previewSound:Stop() previewSound:Destroy() end
+				previewSound = Instance.new("Sound")
+				previewSound.SoundId = "rbxassetid://" .. currentAssetId
+				previewSound.Volume = 0.5
+				previewSound.Parent = workspace
+				previewSound:Play()
+			end
+		end)
+		playBtn.Gui.Parent = soundPreview
+
+		local stopBtn = Lib.Button.new()
+		stopBtn.Text = "Stop"
+		stopBtn.Size = UDim2.new(1, 0, 0, 25)
+		stopBtn.Position = UDim2.new(0, 0, 0, 50)
+		stopBtn.OnClick:Connect(function()
+			if previewSound then previewSound:Stop() end
+		end)
+		stopBtn.Gui.Parent = soundPreview
+
+		meshPreview = createSimple("TextLabel", {
+			Name = "MeshPreview",
+			BackgroundTransparency = 1,
+			Font = Enum.Font.SourceSansItalic,
+			Text = "[3D Mesh]",
+			TextSize = 14,
+			TextColor3 = Color3.fromRGB(120, 120, 125),
+			TextWrapped = true,
+			Position = UDim2.new(0, 0, 0, 0),
+			Size = UDim2.new(1, 0, 1, 0),
+			Visible = false,
+			Parent = previewContainer
+		})
+
+		-- Right area container for details & action buttons
+		detailsFrame = createSimple("Frame", {
+			Name = "DetailsFrame",
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, 120, 0, 5),
+			Size = UDim2.new(1, -125, 1, -10),
+			Parent = previewPanel
+		})
+
+		assetIdLabel = createSimple("TextLabel", {
+			Name = "AssetIdLabel",
+			BackgroundTransparency = 1,
+			Font = Enum.Font.SourceSansBold,
+			Text = "Asset ID: N/A",
+			TextSize = 13,
+			TextColor3 = Color3.fromRGB(240, 240, 245),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.new(0, 0, 0, 5),
+			Size = UDim2.new(1, 0, 0, 18),
+			Parent = detailsFrame
+		})
+
+		typeLabel = createSimple("TextLabel", {
+			Name = "TypeLabel",
+			BackgroundTransparency = 1,
+			Font = Enum.Font.SourceSans,
+			Text = "Type: N/A",
+			TextSize = 13,
+			TextColor3 = Color3.fromRGB(180, 180, 185),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Position = UDim2.new(0, 0, 0, 23),
+			Size = UDim2.new(1, 0, 0, 18),
+			Parent = detailsFrame
+		})
+
+		local copyBtn = Lib.Button.new()
+		copyBtn.Text = "Copy ID"
+		copyBtn.Size = UDim2.new(1, 0, 0, 22)
+		copyBtn.Position = UDim2.new(0, 0, 0, 48)
+		copyBtn.OnClick:Connect(function()
+			if currentAssetId then
+				pcall(setclipboard or writeclipboard, currentAssetId)
+			end
+		end)
+		copyBtn.Gui.Parent = detailsFrame
+
+		local webBtn = Lib.Button.new()
+		webBtn.Text = "Browser"
+		webBtn.Size = UDim2.new(1, 0, 0, 22)
+		webBtn.Position = UDim2.new(0, 0, 0, 75)
+		webBtn.OnClick:Connect(function()
+			if currentAssetId then
+				pcall(openviewport or print, "https://www.roblox.com/library/" .. currentAssetId)
+			end
+		end)
+		webBtn.Gui.Parent = detailsFrame
+	end
+
 	Properties.SetInputProp = function(prop,entryIndex,special)
 		local typeData = prop.ValueType
 		local typeName = typeData.Name
@@ -1903,6 +2166,7 @@ local function main()
 		scrollH.Gui.Parent = window.GuiElems.Content
 		Properties.InitInputBox()
 		Properties.InitSearch()
+		Properties.InitAssetPreview()
 	end
 
 	return Properties

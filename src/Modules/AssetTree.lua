@@ -53,17 +53,14 @@ local function main()
 	local LINE_COLOR = Color3.fromRGB(72, 72, 72)
 
 	-- State
-	local toolBar, splitFrame, treeFrame, scrollV
+	local toolBar, treeFrame, scrollV
 	local searchBox, countLabel
-	local previewPanel, imagePreview, soundPreview, meshPreview, detailsFrame
-	local assetIdLabel, typeLabel, usageLabel, copyIdBtn, openBrowserBtn
 	local clickSys, context
 	local listEntries = {}
 	local tree = {} -- flat list of currently-visible nodes
 	local scanData = {} -- category -> list of assets
 	local expandedByObj = setmetatable({}, {__mode = "k"})
 	local selectedNode
-	local previewSound = nil
 
 	-- Asset categories setup
 	local categories = {
@@ -312,6 +309,18 @@ local function main()
 
 	AssetTree.UpdateView = function()
 		local maxNodes = math.max(math.ceil(treeFrame.AbsoluteSize.Y / ROW_H), 0)
+
+		scrollV.VisibleSpace = maxNodes
+		scrollV.TotalSpace = #tree
+		scrollV.Gui.Visible = #tree > maxNodes
+
+		local newSize = UDim2.new(1, scrollV.Gui.Visible and -16 or 0, 1, -23)
+		if treeFrame.Size ~= newSize then
+			treeFrame.Size = newSize
+		end
+		scrollV:Update()
+		AssetTree.Index = scrollV.Index
+
 		for i = 1, maxNodes do
 			if not listEntries[i] then
 				listEntries[i] = AssetTree.NewEntry(i)
@@ -375,8 +384,13 @@ local function main()
 	end
 
 	AssetTree.NewEntry = function(index)
-		local entryGui = createSimple("Frame", {
+		local entryGui = createSimple("TextButton", {
+			AutoButtonColor = false,
 			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Font = Enum.Font.SourceSans,
+			Text = "",
+			TextSize = 14,
 			Size = UDim2.new(1, 0, 0, ROW_H),
 			ClipsDescendants = true
 		})
@@ -492,15 +506,13 @@ local function main()
 		selectedNode = node
 		AssetTree.Refresh()
 
-		-- Selection updates Properties panel automatically
 		if node then
-			if node.IsInstance and node.Obj and Explorer and Explorer.Selection then
+			if node.IsInstance and node.Obj then
 				node.Class = node.Obj.ClassName
+			end
+			if Explorer and Explorer.Selection then
 				Explorer.Selection:Set(node)
 			end
-			AssetTree.ShowPreview(node)
-		else
-			AssetTree.ClearPreview()
 		end
 	end
 
@@ -561,47 +573,6 @@ local function main()
 			else
 				entry.Gui.Visible = false
 			end
-		end
-	end
-
-	AssetTree.ShowPreview = function(node)
-		AssetTree.ClearPreview()
-
-		if not node.AssetId then
-			assetIdLabel.Text = "Asset ID: N/A"
-			typeLabel.Text = "Type: N/A"
-			usageLabel.Text = "Instances: 0"
-			copyIdBtn.Visible = false
-			openBrowserBtn.Visible = false
-			return
-		end
-
-		assetIdLabel.Text = "Asset ID: " .. node.AssetId
-		typeLabel.Text = "Type: " .. node.AssetType
-		copyIdBtn.Visible = true
-		openBrowserBtn.Visible = true
-
-		local catAssets = scanData[node.AssetType]
-		local assetInfo = catAssets and catAssets[node.AssetId]
-		local usageCount = assetInfo and #assetInfo.Objects or 0
-		usageLabel.Text = "Instances: " .. tostring(usageCount)
-
-		if node.AssetType == "Images" then
-			imagePreview.Image = "rbxassetid://" .. node.AssetId
-			imagePreview.Visible = true
-		elseif node.AssetType == "Sounds" then
-			soundPreview.Visible = true
-		elseif node.AssetType == "Meshes" then
-			meshPreview.Visible = true
-		end
-	end
-
-	AssetTree.ClearPreview = function()
-		imagePreview.Visible = false
-		soundPreview.Visible = false
-		meshPreview.Visible = false
-		if previewSound then
-			previewSound:Stop()
 		end
 	end
 
@@ -715,24 +686,20 @@ local function main()
 			{7,"TextLabel",{BackgroundTransparency=1,Font=3,Name="Count",Parent={2},Position=UDim2.new(1,-90,0,1),Size=UDim2.new(0,64,0,18),Text="0 assets",TextColor3=Color3.fromRGB(120,120,125),TextSize=13,TextXAlignment=1,}},
 			{8,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.fromRGB(35,37,45),BorderSizePixel=0,Font=3,Name="Refresh",Parent={2},Position=UDim2.new(1,-20,0,1),Size=UDim2.new(0,18,0,18),Text="",TextColor3=Color3.fromRGB(240,240,245),TextSize=14,}},
 			{9,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://5642310344",Parent={8},Position=UDim2.new(0,3,0,3),Size=UDim2.new(0,12,0,12),}},
-			{10,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ClipsDescendants=true,Name="List",Parent={1},Position=UDim2.new(0,0,0,23),Size=UDim2.new(0.65,0,1,-23),}},
-			{11,"Frame",{BackgroundColor3=Color3.fromRGB(35,37,45),BorderSizePixel=0,Name="Divider",Parent={1},Position=UDim2.new(0.65,0,0,23),Size=UDim2.new(0,1,1,-23),}},
-			{12,"Frame",{BackgroundColor3=Color3.fromRGB(18,18,20),BackgroundTransparency=0.3,BorderSizePixel=0,Name="PreviewPanel",Parent={1},Position=UDim2.new(0.65,1,0,23),Size=UDim2.new(0.35,-1,1,-23),}},
+			{10,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ClipsDescendants=true,Name="List",Parent={1},Position=UDim2.new(0,0,0,23),Size=UDim2.new(1,0,1,-23),}},
 		})
 
 		toolBar = items.ToolBar
 		treeFrame = items.List
 		searchBox = toolBar.SearchFrame.SearchBox
 		countLabel = toolBar.Count
-		previewPanel = items.PreviewPanel
 
 		AssetTree.GuiElems.ToolBar = toolBar
 		AssetTree.GuiElems.TreeFrame = treeFrame
-		AssetTree.GuiElems.PreviewPanel = previewPanel
 
 		scrollV = Lib.ScrollBar.new()
 		scrollV.WheelIncrement = 3
-		scrollV.Gui.Position = UDim2.new(0.65, -16, 0, 23)
+		scrollV.Gui.Position = UDim2.new(1, -16, 0, 23)
 		scrollV.Gui.Size = UDim2.new(0, 16, 1, -23)
 		scrollV:SetScrollFrame(treeFrame)
 		scrollV.Scrolled:Connect(function()
@@ -740,158 +707,12 @@ local function main()
 			AssetTree.Refresh()
 		end)
 
-		-- Create Preview components inside previewPanel
-		local header = createSimple("TextLabel", {
-			Name = "Header",
-			BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSansBold,
-			Text = "Asset Preview",
-			TextSize = 14,
-			TextColor3 = Color3.fromRGB(240,240,245),
-			Size = UDim2.new(1, 0, 0, 22),
-			Position = UDim2.new(0, 0, 0, 2),
-			Parent = previewPanel
-		})
-
-		imagePreview = createSimple("ImageLabel", {
-			Name = "ImagePreview",
-			BackgroundTransparency = 1,
-			Size = UDim2.new(1, -10, 0, 100),
-			Position = UDim2.new(0, 5, 0, 25),
-			ScaleType = Enum.ScaleType.Fit,
-			Visible = false,
-			Parent = previewPanel
-		})
-
-		soundPreview = createSimple("Frame", {
-			Name = "SoundPreview",
-			BackgroundTransparency = 1,
-			Size = UDim2.new(1, -10, 0, 100),
-			Position = UDim2.new(0, 5, 0, 25),
-			Visible = false,
-			Parent = previewPanel
-		})
-		local playBtn = Lib.Button.new()
-		playBtn.Text = "Play Sound"
-		playBtn.Size = UDim2.new(1, 0, 0, 22)
-		playBtn.Position = UDim2.new(0, 0, 0, 10)
-		playBtn.OnClick:Connect(function()
-			if selectedNode and selectedNode.AssetId then
-				if previewSound then previewSound:Stop() previewSound:Destroy() end
-				previewSound = Instance.new("Sound")
-				previewSound.SoundId = "rbxassetid://" .. selectedNode.AssetId
-				previewSound.Volume = 0.5
-				previewSound.Parent = workspace
-				previewSound:Play()
-			end
-		end)
-		playBtn.Gui.Parent = soundPreview
-
-		local stopBtn = Lib.Button.new()
-		stopBtn.Text = "Stop Sound"
-		stopBtn.Size = UDim2.new(1, 0, 0, 22)
-		stopBtn.Position = UDim2.new(0, 0, 0, 38)
-		stopBtn.OnClick:Connect(function()
-			if previewSound then previewSound:Stop() end
-		end)
-		stopBtn.Gui.Parent = soundPreview
-
-		meshPreview = createSimple("TextLabel", {
-			Name = "MeshPreview",
-			BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSansItalic,
-			Text = "[3D Mesh Reference]",
-			TextSize = 14,
-			TextColor3 = Color3.fromRGB(120,120,125),
-			Size = UDim2.new(1, -10, 0, 100),
-			Position = UDim2.new(0, 5, 0, 25),
-			Visible = false,
-			Parent = previewPanel
-		})
-
-		detailsFrame = createSimple("Frame", {
-			Name = "DetailsFrame",
-			BackgroundTransparency = 1,
-			Size = UDim2.new(1, -10, 1, -135),
-			Position = UDim2.new(0, 5, 0, 130),
-			Parent = previewPanel
-		})
-
-		assetIdLabel = createSimple("TextLabel", {
-			Name = "AssetIdLabel",
-			BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSans,
-			Text = "Asset ID: N/A",
-			TextSize = 13,
-			TextColor3 = Color3.fromRGB(240,240,245),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			Size = UDim2.new(1, 0, 0, 20),
-			Position = UDim2.new(0, 0, 0, 0),
-			Parent = detailsFrame
-		})
-
-		typeLabel = createSimple("TextLabel", {
-			Name = "TypeLabel",
-			BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSans,
-			Text = "Type: N/A",
-			TextSize = 13,
-			TextColor3 = Color3.fromRGB(240,240,245),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			Size = UDim2.new(1, 0, 0, 20),
-			Position = UDim2.new(0, 0, 0, 20),
-			Parent = detailsFrame
-		})
-
-		usageLabel = createSimple("TextLabel", {
-			Name = "UsageLabel",
-			BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSans,
-			Text = "Instances: 0",
-			TextSize = 13,
-			TextColor3 = Color3.fromRGB(240,240,245),
-			TextXAlignment = Enum.TextXAlignment.Left,
-			Size = UDim2.new(1, 0, 0, 20),
-			Position = UDim2.new(0, 0, 0, 40),
-			Parent = detailsFrame
-		})
-
-		local copyBtn = Lib.Button.new()
-		copyBtn.Text = "Copy Asset ID"
-		copyBtn.Size = UDim2.new(1, 0, 0, 22)
-		copyBtn.Position = UDim2.new(0, 0, 0, 65)
-		copyBtn.OnClick:Connect(function()
-			if selectedNode and selectedNode.AssetId then
-				pcall(setclipboard or writeclipboard, selectedNode.AssetId)
-			end
-		end)
-		copyBtn.Gui.Parent = detailsFrame
-		copyIdBtn = copyBtn.Gui
-		copyIdBtn.Visible = false
-
-		local webBtn = Lib.Button.new()
-		webBtn.Text = "Open in Browser"
-		webBtn.Size = UDim2.new(1, 0, 0, 22)
-		webBtn.Position = UDim2.new(0, 0, 0, 92)
-		webBtn.OnClick:Connect(function()
-			if selectedNode and selectedNode.AssetId then
-				pcall(openviewport or print, "https://www.roblox.com/library/" .. selectedNode.AssetId)
-			end
-		end)
-		webBtn.Gui.Parent = detailsFrame
-		openBrowserBtn = webBtn.Gui
-		openBrowserBtn.Visible = false
-
 		local page = createSimple("Frame", {Name = "AssetTreePage", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0)})
 		AssetTree.Page = page
 		AssetTree.Window = Explorer.Window
 		toolBar.Parent = page
 		treeFrame.Parent = page
 		scrollV.Gui.Parent = page
-		divider = items.Divider
-		divider.Parent = page
-		previewPanel.Parent = page
 
 		toolBar.Refresh.MouseButton1Click:Connect(function() AssetTree.Rebuild() end)
 
@@ -902,7 +723,7 @@ local function main()
 
 		Explorer.AddTab("Asset Tree", page, {
 			OnShow = function() AssetTree.Active = true AssetTree.Rebuild() end,
-			OnHide = function() AssetTree.Active = false if previewSound then previewSound:Stop() end end,
+			OnHide = function() AssetTree.Active = false end,
 			OnResize = function() if AssetTree.Active then AssetTree.UpdateView() AssetTree.Refresh() end end,
 		})
 
