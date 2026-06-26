@@ -602,7 +602,8 @@ local function main()
 
 				entry.Icon.Position = UDim2.new(0, depth * INDENT + ICON_OFF, 0, 2)
 				pcall(function()
-					(Explorer.MiscIcons or miscIcons):DisplayExplorerIcons(entry.Icon, obj.ClassName)
+					local displayIcons = Explorer.MiscIcons or miscIcons
+					displayIcons:DisplayExplorerIcons(entry.Icon, obj.ClassName)
 				end)
 				entry.Icon.ImageTransparency = node.IsRemote and 0 or 0.35
 

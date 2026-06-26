@@ -146,7 +146,7 @@ DefaultSettings = (function()
 		},
 		Window = {
 			TitleOnMiddle = false,
-			Transparency = .2
+			Transparency = 0
 		},
 		Decompiler = {
 			DecompilerFallback = "Konstant", --Konstant, Shiny, AdvancedDecompiler

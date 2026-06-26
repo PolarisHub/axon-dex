@@ -531,7 +531,8 @@ local function main()
 				entry.Icon.Position = UDim2.new(0, depth * INDENT + ICON_OFF, 0, 2)
 				pcall(function()
 					local className = getNodeClassName(node)
-					(Explorer.MiscIcons or miscIcons):DisplayExplorerIcons(entry.Icon, className)
+					local displayIcons = Explorer.MiscIcons or miscIcons
+					displayIcons:DisplayExplorerIcons(entry.Icon, className)
 				end)
 
 				drawLines(entry, node)
