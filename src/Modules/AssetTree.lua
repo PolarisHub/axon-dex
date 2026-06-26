@@ -198,7 +198,7 @@ local function main()
 
 				local children = inst:GetChildren()
 				for i = 1, #children do
-					table.insert(scanQueue, children[i])
+					scanQueue[#scanQueue + 1] = children[i]
 				end
 
 				totalScannedCount = totalScannedCount + 1
@@ -245,7 +245,15 @@ local function main()
 			}
 
 			local visibleAssets = 0
-			for assetId, assetInfo in pairs(catAssets) do
+			local assetIds = {}
+			for id, _ in next, catAssets do
+				assetIds[#assetIds + 1] = id
+			end
+			table.sort(assetIds)
+
+			for ai = 1, #assetIds do
+				local assetId = assetIds[ai]
+				local assetInfo = catAssets[assetId]
 				local assetNode = {
 					Name = "Asset: " .. assetId,
 					Depth = 1,
@@ -271,13 +279,17 @@ local function main()
 							Parent = assetNode,
 							Children = {}
 						}
-						table.insert(assetNode.Children, instNode)
+						assetNode.Children[#assetNode.Children + 1] = instNode
 						visibleObjs = visibleObjs + 1
 					end
 				end
 
+				table.sort(assetNode.Children, function(a, b)
+					return a.Name:lower() < b.Name:lower()
+				end)
+
 				if visibleObjs > 0 or matchQuery(assetId) then
-					table.insert(catNode.Children, assetNode)
+					catNode.Children[#catNode.Children + 1] = assetNode
 					visibleAssets = visibleAssets + 1
 				end
 			end
@@ -555,6 +567,7 @@ local function main()
 					local displayIcons = Explorer.MiscIcons or miscIcons
 					displayIcons:DisplayExplorerIcons(entry.Icon, className)
 				end)
+				entry.Icon.ImageTransparency = node.IsInstance and 0 or 0.35
 
 				drawLines(entry, node)
 
@@ -599,7 +612,18 @@ local function main()
 			AssetTree.SetSelected(node)
 
 			if button == 1 and combo == 2 then
-				if #node.Children > 0 then
+				if node.IsInstance and node.Obj then
+					if node.Obj:IsA("LuaSourceContainer") then
+						ScriptViewer.ViewScript(node.Obj)
+					else
+						local expNode = nodes and nodes[node.Obj]
+						if expNode and Explorer and Explorer.Selection then
+							Explorer.Selection:Set(expNode)
+							Explorer.ViewNode(expNode)
+							Explorer.Window:Show()
+						end
+					end
+				elseif #node.Children > 0 then
 					node.Expanded = not node.Expanded
 					expandedByObj[node.IsCategory and node.AssetType or node.AssetId] = node.Expanded
 					AssetTree.Flatten()
@@ -640,14 +664,37 @@ local function main()
 		if selectedNode.IsInstance and selectedNode.Obj then
 			context:Add({
 				Name = "Select in Explorer",
-				IconMap = Explorer.ClassIcons,
-				Icon = 2,
+				IconMap = Explorer.MiscIcons or Main.MiscIcons,
+				Icon = "JumpToParent",
 				OnClick = function()
-					if nodes and nodes[selectedNode.Obj] then
-						Explorer.Selection:Set(nodes[selectedNode.Obj])
+					local expNode = nodes and nodes[selectedNode.Obj]
+					if expNode and Explorer and Explorer.Selection then
+						Explorer.Selection:Set(expNode)
+						Explorer.ViewNode(expNode)
+						Explorer.Window:Show()
 					end
 				end
 			})
+
+			if selectedNode.Obj:IsA("LuaSourceContainer") then
+				context:Add({
+					Name = "View Script",
+					IconMap = Main.MiscIcons,
+					Icon = "ViewScript",
+					OnClick = function()
+						ScriptViewer.ViewScript(selectedNode.Obj)
+					end
+				})
+				context:Add({
+					Name = "Copy Source",
+					IconMap = Main.MiscIcons,
+					Icon = "Copy",
+					OnClick = function()
+						local s, src = pcall(env.decompile, selectedNode.Obj)
+						if s and src then env.setclipboard(src) end
+					end
+				})
+			end
 		end
 
 		local mouse = Main.Mouse

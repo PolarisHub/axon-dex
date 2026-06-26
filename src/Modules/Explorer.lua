@@ -487,7 +487,8 @@ local function main()
 		local dragTree = treeFrame:Clone()
 		dragTree:ClearAllChildren()
 
-		for i,v in pairs(listEntries) do
+		for i = 1, #listEntries do
+			local v = listEntries[i]
 			local node = tree[i + Explorer.Index]
 			if node and selection.Map[node] then
 				local clone = v:Clone()
@@ -1390,6 +1391,9 @@ local function main()
 		context:Register("INSERT_OBJECT",{Name = "Insert Object", IconMap = Explorer.MiscIcons, Icon = "InsertObject", OnClick = function()
 			local mouse = Main.Mouse
 			local x,y = Explorer.LastRightClickX or mouse.X, Explorer.LastRightClickY or mouse.Y
+			if not Explorer.InsertObjectContext then
+				Explorer.InitInsertObject()
+			end
 			Explorer.InsertObjectContext:Show(x,y)
 		end})
 
@@ -1618,7 +1622,7 @@ local function main()
 			for i,v in next, service.Players:GetPlayers() do
 				if v.Character and nodes[v.Character] then
 					if i == 1 then Explorer.MakeNodeVisible(v.Character) end
-					table.insert(newSelection, nodes[v.Character])
+					newSelection[#newSelection + 1] = nodes[v.Character]
 				end
 			end
 
@@ -2590,7 +2594,7 @@ return search]==]
 		Explorer.Selection = selection
 
 		Explorer.InitRightClick()
-		Explorer.InitInsertObject()
+		-- Defer InitInsertObject to first use to speed up startup
 		Explorer.SetSortingEnabled(Settings.Explorer.Sorting)
 		Explorer.Expanded = setmetatable({},{__mode = "k"})
 		Explorer.SearchExpanded = setmetatable({},{__mode = "k"})

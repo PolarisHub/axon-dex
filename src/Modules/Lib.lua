@@ -204,52 +204,72 @@ local function main()
 						t[#t+1] = {text=txt}
 					end
 				end
+				local pos = 1
+				local len_s = #s
+				local clock = tick
+				local parseStart = clock()
+				local s_find = string.find
+				local s_match = string.match
+				local s_sub = string.sub
+				local s_gmatch = string.gmatch
+				local s_byte = string.byte
 
-				s:gsub('<([?!/]?)([-:_%w]+)%s*(/?>?)([^<]*)', function(type, name, closed, txt)
-					-- open
-					if #type == 0 then
-						local a = {}
-						if #closed == 0 then
-							local len = 0
-							for all,aname,_,value,starttxt in string.gmatch(txt, "(.-([-_%w]+)%s*=%s*(.)(.-)%3%s*(/?>?))") do
-								len = len + #all
-								a[aname] = value
-								if #starttxt ~= 0 then
-									txt = txt:sub(len+1)
-									closed = starttxt
-									break
+				while pos <= len_s do
+					if clock() - parseStart > 0.015 then
+						task.wait()
+						parseStart = clock()
+					end
+
+					local nextTag = s_find(s, "<", pos, true)
+					if not nextTag then
+						break
+					end
+
+					local startIdx, endIdx, type, name, closed, txt = s_find(s, "^([?!/]?)([-:_%w]+)%s*(/?>?)([^<]*)", nextTag + 1)
+					if startIdx then
+						pos = endIdx + 1
+
+						-- open
+						if #type == 0 then
+							local a = {}
+							if #closed == 0 then
+								local len = 0
+								for all,aname,_,value,starttxt in s_gmatch(txt, "(.-([-_%w]+)%s*=%s*(.)(.-)%3%s*(/?>?))") do
+									len = len + #all
+									a[aname] = value
+									if #starttxt ~= 0 then
+										txt = s_sub(txt, len+1)
+										closed = starttxt
+										break
+									end
 								end
 							end
-						end
-						t[#t+1] = {tag=name, attrs=a, children={}}
+							t[#t+1] = {tag=name, attrs=a, children={}}
 
-						if closed:byte(1) ~= slashchar then
-							l[#l+1] = t
-							t = t[#t].children
-						end
+							if s_byte(closed, 1) ~= slashchar then
+								l[#l+1] = t
+								t = t[#t].children
+							end
 
-						addtext(txt)
-						-- close
-					elseif '/' == type then
-						t = l[#l]
-						l[#l] = nil
+							addtext(txt)
+							-- close
+						elseif '/' == type then
+							t = l[#l]
+							l[#l] = nil
 
-						addtext(txt)
-						-- ENTITY
-					elseif '!' == type then
-						if E == name:byte(1) then
-							txt:gsub('([_%w]+)%s+(.)(.-)%2', function(name, q, entity)
-								entities[#entities+1] = {name=name, value=entity}
-							end, 1)
+							addtext(txt)
+							-- ENTITY
+						elseif '!' == type then
+							if E == s_byte(name, 1) then
+								txt:gsub('([_%w]+)%s+(.)(.-)%2', function(name, q, entity)
+									entities[#entities+1] = {name=name, value=entity}
+								end, 1)
+							end
 						end
-						-- elseif '?' == type then
-						--	 print('?	' .. name .. ' // ' .. attrs .. '$$')
-						-- elseif '-' == type then
-						--	 print('comment	' .. name .. ' // ' .. attrs .. '$$')
-						-- else
-						--	 print('o	' .. #p .. ' // ' .. name .. ' // ' .. attrs .. '$$')
+					else
+						pos = nextTag + 1
 					end
-				end)
+				end
 
 				return {children=t, entities=entities, tentities=tentities}
 			end

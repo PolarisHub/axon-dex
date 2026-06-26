@@ -134,10 +134,17 @@ local function main()
 				end
 			end
 		end
-		for _, _function in pairs(env.getgc()) do
+		local gc = env.getgc()
+		local start = tick()
+		for i = 1, #gc do
+			local _function = gc[i]
 			if typeof(_function) == "function" and getfenv(_function).script and getfenv(_function).script == scr then
 				functions:dump_function(_function, 0)
 				functions:add_to_dump("\n" .. ("="):rep(100), 0, false)
+			end
+			if tick() - start > 0.015 then
+				task.wait()
+				start = tick()
 			end
 		end
 		local source = codeFrame:GetText()

@@ -178,10 +178,14 @@ local plr = service.Players.LocalPlayer or service.Players.PlayerAdded:wait()
 
 local create = function(data)
 	local insts = {}
-	for i,v in pairs(data) do insts[v[1]] = Instance.new(v[2]) end
+	for i = 1, #data do
+		local v = data[i]
+		insts[v[1]] = Instance.new(v[2])
+	end
 
-	for _,v in pairs(data) do
-		for prop,val in pairs(v[3]) do
+	for i = 1, #data do
+		local v = data[i]
+		for prop, val in next, v[3] do
 			if type(val) == "table" then
 				insts[v[1]][prop] = insts[val[1]]
 			else
@@ -338,11 +342,19 @@ Main = (function()
 	end
 
 	Main.LoadModules = function()
-		for i,v in pairs(Main.ModuleList) do
-			local s,e = pcall(Main.LoadModule,v)
-			if not s then
-				Main.Error("FAILED LOADING " .. v .. " CAUSE " .. e)
-			end
+		local total = #Main.ModuleList
+		local loaded = 0
+		for i = 1, total do
+			local name = Main.ModuleList[i]
+			task.spawn(function()
+				local s, e = pcall(Main.LoadModule, name)
+				if not s then
+					Main.Error("FAILED LOADING " .. name .. " CAUSE " .. e)
+				end
+				loaded = loaded + 1
+			end)
+		end
+		while loaded < total do
 			task.wait()
 		end
 
@@ -403,23 +415,26 @@ Main = (function()
 		env.makefolder = makefolder
 		env.listfiles = listfiles
 		env.loadfile = loadfile
-		env.saveinstance = saveinstance or (function()
-			if game:GetService("RunService"):IsStudio() then return function() error("Cannot run in Roblox Studio!") end end
-			local Params = {
-				RepoURL = "https://raw.githubusercontent.com/luau/SynSaveInstance/main/",
-				SSI = "saveinstance",
-			}
-			local synsaveinstance = loadstring(oldgame:HttpGet(Params.RepoURL .. Params.SSI .. ".luau", true), Params.SSI)()
-
-			local function wrappedsaveinstance(obj, filepath, options)
-				options["FilePath"] = filepath
-				options["Object"] = obj
-				return synsaveinstance(options)
+		local synsaveinstance
+		local function lazySaveInstance(obj, filepath, options)
+			if game:GetService("RunService"):IsStudio() then error("Cannot run in Roblox Studio!") end
+			if not synsaveinstance then
+				local Params = {
+					RepoURL = "https://raw.githubusercontent.com/luau/SynSaveInstance/main/",
+					SSI = "saveinstance",
+				}
+				synsaveinstance = loadstring(oldgame:HttpGet(Params.RepoURL .. Params.SSI .. ".luau", true), Params.SSI)()
 			end
+			options = options or {}
+			options["FilePath"] = filepath
+			options["Object"] = obj
+			return synsaveinstance(options)
+		end
 
-			getgenv().saveinstance = wrappedsaveinstance
-			return wrappedsaveinstance
-		end)()
+		env.saveinstance = saveinstance or lazySaveInstance
+		if not saveinstance then
+			getgenv().saveinstance = lazySaveInstance
+		end
 
 		env.parsefile = function(name)
 			return tostring(name):gsub("[*\\?:<>|]+", ""):sub(1, 175)
@@ -468,10 +483,7 @@ Main = (function()
 
 		-- DECOMPILERS
 
-		local AdvancedDecompilerCache
-		pcall(function()
-			AdvancedDecompilerCache = loadstring(game:HttpGet("https://raw.githubusercontent.com/AZYsGithub/Advanced-Decompiler-V3/refs/heads/main/init.lua"))()
-		end)
+		-- AdvancedDecompiler load deferred to first use
 
 		local konstant_last_call = 0
 
@@ -517,7 +529,20 @@ Main = (function()
 
 			return konstantDecompile(...)
 		end
-		local ADDec = AdvancedDecompilerCache or function() return "Failed to load Advanced Decompiler" end
+		local AdvancedDecompilerCache
+		local function ADDec(...)
+			if not AdvancedDecompilerCache then
+				local success, result = pcall(function()
+					return loadstring(game:HttpGet("https://raw.githubusercontent.com/AZYsGithub/Advanced-Decompiler-V3/refs/heads/main/init.lua"))()
+				end)
+				if success and result then
+					AdvancedDecompilerCache = result
+				else
+					return "-- Failed to load Advanced Decompiler V3"
+				end
+			end
+			return AdvancedDecompilerCache(...)
+		end
 
 		local function ShinyDec(script_instance)
 			if typeof(crypt) ~= "table" then return "-- 'crypt' library is missing!" end
@@ -711,7 +736,9 @@ Main = (function()
 		downloaded = true
 
 		Main.RawAPI = rawAPI
+		task.wait()
 		api = service.HttpService:JSONDecode(rawAPI)
+		task.wait()
 
 		local classes,enums = {},{}
 		local categoryOrder,seenCategories = {},{}
@@ -1546,7 +1573,9 @@ Main = (function()
 		if Main.Elevated and env.writefile and not Main.LocalDepsUpToDate() then
 			task.spawn(function()
 				env.writefile("axon/deps_version.dat",Main.ClientVersion.."\n"..Main.RobloxVersion)
+				task.wait()
 				env.writefile("axon/rbx_api.dat",Main.RawAPI)
+				task.wait()
 				env.writefile("axon/rbx_rmd.dat",Main.RawRMD)
 			end)
 		end
@@ -1557,19 +1586,20 @@ Main = (function()
 		Main.LoadModules()
 		task.wait()
 
-		-- Init other modules – yield between each to keep the UI responsive
+		-- Init other modules – time-slice yields to keep UI responsive without artificial lag
 		intro.SetProgress("Initializing Modules",0.8)
-		Explorer.Init()  task.wait()
-		Properties.Init()  task.wait()
-		ScriptViewer.Init()  task.wait()
-		ScriptTree.Init()  task.wait()
-		Console.Init()  task.wait()
-		SaveInstance.Init()  task.wait()
-		ModelViewer.Init()  task.wait()
-		SettingsWindow.Init()  task.wait()
-		RemoteTree.Init()  task.wait()
-		AssetTree.Init()  task.wait()
-		ScriptSearch.Init()
+		local initStart = tick()
+		local modulesToInit = {
+			Explorer, Properties, ScriptViewer, ScriptTree, Console,
+			SaveInstance, ModelViewer, SettingsWindow, RemoteTree, AssetTree, ScriptSearch
+		}
+		for i = 1, #modulesToInit do
+			modulesToInit[i].Init()
+			if tick() - initStart > 0.015 then
+				task.wait()
+				initStart = tick()
+			end
+		end
 
 		if env.readfile and listfiles then
 			if #listfiles("axon/plugins") > 0 then

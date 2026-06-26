@@ -225,10 +225,10 @@ local function main()
 			for i = 1, #ch do
 				local c = ch[i]
 				if isa(c, "LuaSourceContainer") then
-					table.insert(scripts, c)
+					scripts[#scripts + 1] = c
 				end
 				if #c:GetChildren() > 0 then
-					table.insert(queue, c)
+					queue[#queue + 1] = c
 				end
 			end
 			if os.clock() - start > 0.015 then
@@ -255,12 +255,12 @@ local function main()
 						lineNum = lineNum + 1
 						if string.find(line:lower(), lq, 1, true) then
 							local cleanContent = line:gsub("^%s+", ""):gsub("%s+$", "")
-							table.insert(results, {
+							results[#results + 1] = {
 								Obj = scr,
 								Line = lineNum,
 								Content = cleanContent,
 								Path = scr:GetFullName()
-							})
+							}
 							ScriptSearch.UpdateView()
 							ScriptSearch.Refresh()
 						end

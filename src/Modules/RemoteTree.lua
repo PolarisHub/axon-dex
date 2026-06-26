@@ -363,7 +363,7 @@ local function main()
 						end
 					end
 					if #c:GetChildren() > 0 then
-						table.insert(queue, c)
+						queue[#queue + 1] = c
 					end
 				end
 
