@@ -126,38 +126,47 @@ local function main()
 			par.Sorted = nil
 		end
 
-		local insts = getDescendants(root)
-		for i = 1,#insts do
-			local obj = insts[i]
-			if nodes[obj] then continue end -- Deferred
+		local parentPar = par
+		task.spawn(function()
+			local insts = getDescendants(root)
+			local start = os.clock()
+			for i = 1,#insts do
+				local obj = insts[i]
+				if nodes[obj] then continue end
 
-			local par = nodes[obj.Parent]
-			if not par then continue end
-			local newNode = {Obj = obj, Parent = par}
-			nodes[obj] = newNode
-			par[#par+1] = newNode
+				local par = nodes[obj.Parent]
+				if not par then continue end
+				local newNode = {Obj = obj, Parent = par}
+				nodes[obj] = newNode
+				par[#par+1] = newNode
 
-			-- Nil Handling
-			if isNil then
-				nilMap[obj] = true
-				nilCons[obj] = nilCons[obj] or {
-					connectSignal(obj.ChildAdded,addObject),
-					connectSignal(obj.AncestryChanged,moveObject),
-				}
+				-- Nil Handling
+				if isNil then
+					nilMap[obj] = true
+					nilCons[obj] = nilCons[obj] or {
+						connectSignal(obj.ChildAdded,addObject),
+						connectSignal(obj.AncestryChanged,moveObject),
+					}
+				end
+
+				if os.clock() - start > 0.015 then
+					task.wait()
+					start = os.clock()
+				end
 			end
-		end
 
-		if searchFunc and autoUpdateSearch then
-			searchFunc({newNode})
-		end
-
-		if not updateDebounce and Explorer.IsNodeVisible(par) then
-			if expanded[par] then
-				Explorer.PerformUpdate()
-			elseif not refreshDebounce then
-				Explorer.PerformRefresh()
+			if searchFunc and autoUpdateSearch then
+				searchFunc({newNode})
 			end
-		end
+
+			if not updateDebounce and Explorer.IsNodeVisible(parentPar) then
+				if expanded[parentPar] then
+					Explorer.PerformUpdate()
+				elseif not refreshDebounce then
+					Explorer.PerformRefresh()
+				end
+			end
+		end)
 	end
 
 	removeObject = function(root)
@@ -368,7 +377,10 @@ local function main()
 		if aOrder ~= bOrder then
 			return aOrder < bOrder
 		else
-			local aName,bName = tostring(a.Obj),tostring(b.Obj)
+			local aName = a.Name
+			if not aName then aName = tostring(a.Obj) a.Name = aName end
+			local bName = b.Name
+			if not bName then bName = tostring(b.Obj) b.Name = bName end
 			if aName ~= bName then
 				return aName < bName
 			elseif aClass ~= bClass then
@@ -679,13 +691,17 @@ local function main()
 				entry.Visible = true
 				entry.Position = UDim2.new(0,-scrollH.Index,0,entry.Position.Y.Offset)
 				entry.Size = UDim2.new(0,Explorer.ViewWidth,0,20)
-				entry.Indent.EntryName.Text = tostring(node.Obj)
+				local objName = node.Name
+				if not objName then objName = tostring(obj) node.Name = objName end
+				entry.Indent.EntryName.Text = objName
 				entry.Indent.Position = UDim2.new(0,depth,0,0)
 				entry.Indent.Size = UDim2.new(1,-depth,1,0)
 
 				entry.Indent.EntryName.TextTruncate = (Settings.Explorer.UseNameWidth and Enum.TextTruncate.None or Enum.TextTruncate.AtEnd)
 
-				Explorer.MiscIcons:DisplayExplorerIcons(entry.Indent.Icon, obj.ClassName)
+				local objClass = node.Class
+				if not objClass then objClass = obj.ClassName node.Class = objClass end
+				Explorer.MiscIcons:DisplayExplorerIcons(entry.Indent.Icon, objClass)
 
 				if selection.Map[node] then
 					entry.Indent.BackgroundColor3 = Settings.Theme.ListSelection
@@ -801,12 +817,15 @@ local function main()
 					moveObject(obj)
 				elseif prop == "Name" and nodes[obj] then
 					nodes[obj].NameWidth = nil
+					nodes[obj].Name = nil
 				end
 			end)
 		else
 			itemChangedCon = game.ItemChanged:Connect(function(obj,prop)
 				if prop == "Parent" and nodes[obj] then
 					moveObject(obj)
+				elseif prop == "Name" and nodes[obj] then
+					nodes[obj].Name = nil
 				end
 			end)
 		end
@@ -2685,47 +2704,73 @@ return search]==]
 
 		task.spawn(function()
 			Lib.ShowLoading(expPage, "Scanning workspace...")
-			local insts = getDescendants(game)
-			local count = #insts
 			local start = os.clock()
+			local queue = {game}
+			local head = 1
+
 			if Main.Elevated then
-				for i = 1,count do
-					if i % 1000 == 0 and os.clock() - start > 0.015 then
+				while head <= #queue do
+					local parentObj = queue[head]
+					head = head + 1
+
+					local children = parentObj:GetChildren()
+					for i = 1, #children do
+						local obj = children[i]
+						if nodes[obj] then continue end
+
+						local par = nodes[parentObj]
+						if par then
+							local newNode = {
+								Obj = obj,
+								Parent = par,
+							}
+							nodes[obj] = newNode
+							par[#par+1] = newNode
+						end
+
+						table.insert(queue, obj)
+					end
+
+					if os.clock() - start > 0.015 then
 						task.wait()
 						start = os.clock()
 					end
-					local obj = insts[i]
-					if nodes[obj] then continue end
-					local parentObj = obj.Parent
-					local par = nodes[parentObj]
-					if not par then continue end
-					local newNode = {
-						Obj = obj,
-						Parent = par,
-					}
-					nodes[obj] = newNode
-					par[#par+1] = newNode
 				end
 			else
-				for i = 1,count do
-					if i % 300 == 0 and os.clock() - start > 0.015 then
+				while head <= #queue do
+					local parentObj = queue[head]
+					head = head + 1
+
+					local s, children = pcall(parentObj.GetChildren, parentObj)
+					if s and children then
+						for i = 1, #children do
+							local obj = children[i]
+							if nodes[obj] then continue end
+
+							local s2, realParent = pcall(function() return obj.Parent end)
+							if s2 and realParent then
+								local par = nodes[realParent]
+								if par then
+									local newNode = {
+										Obj = obj,
+										Parent = par,
+									}
+									nodes[obj] = newNode
+									par[#par+1] = newNode
+								end
+							end
+
+							table.insert(queue, obj)
+						end
+					end
+
+					if os.clock() - start > 0.015 then
 						task.wait()
 						start = os.clock()
 					end
-					local obj = insts[i]
-					if nodes[obj] then continue end
-					local s,parentObj = pcall(function() return obj.Parent end)
-					if not s or not parentObj then continue end
-					local par = nodes[parentObj]
-					if not par then continue end
-					local newNode = {
-						Obj = obj,
-						Parent = par,
-					}
-					nodes[obj] = newNode
-					par[#par+1] = newNode
 				end
 			end
+
 			Lib.HideLoading(expPage)
 			if Explorer.Active then
 				Explorer.UpdateView()

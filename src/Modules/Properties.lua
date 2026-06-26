@@ -1556,7 +1556,11 @@ local function main()
 					nameFrame.Position = UDim2.new(0,leftOffset,0,0)
 					propNameLabel.Size = UDim2.new(1,-2 - (scaleType == 0 and 0 or 6),1,0)
 
-					local gName = (prop.CategoryName and "CAT_"..prop.CategoryName) or prop.Class.."."..prop.Name..(prop.SubName or "")
+					local gName = prop.FullName
+					if not gName then
+						gName = (prop.CategoryName and "CAT_"..prop.CategoryName) or prop.Class.."."..prop.Name..(prop.SubName or "")
+						prop.FullName = gName
+					end
 
 					if prop.CategoryName then
 						entry.BackgroundColor3 = Settings.Theme.Main1
@@ -1597,8 +1601,13 @@ local function main()
 							valueFrame.Size = UDim2.new(0.5,-attributeOffset,1,0)
 						end
 
-						local nameArr = stringSplit(gName,".")
-						propNameBox.Text = prop.DisplayName or nameArr[#nameArr]
+						local displayName = prop.DisplayName
+						if not displayName then
+							local nameArr = stringSplit(gName,".")
+							displayName = nameArr[#nameArr]
+							prop.DisplayName = displayName
+						end
+						propNameBox.Text = displayName
 						propNameBox.Font = Enum.Font.SourceSans
 						entry.BackgroundColor3 = Settings.Theme.Main2
 						valueFrame.Visible = true
@@ -1622,7 +1631,7 @@ local function main()
 
 						-- Position and resize Input Box
 						local beforeVisible = valueBox.Visible
-						local inputFullName = inputProp and (inputProp.Class.."."..inputProp.Name..(inputProp.SubName or ""))
+						local inputFullName = inputProp and (inputProp.FullName or (inputProp.Class.."."..inputProp.Name..(inputProp.SubName or "")))
 						if gName == inputFullName then
 							nameFrame.BackgroundColor3 = Settings.Theme.ListSelection
 							nameFrame.BackgroundTransparency = 0

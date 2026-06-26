@@ -343,6 +343,7 @@ Main = (function()
 			if not s then
 				Main.Error("FAILED LOADING " .. v .. " CAUSE " .. e)
 			end
+			task.wait()
 		end
 
 		-- Init Major Apps and define them in modules
@@ -727,7 +728,7 @@ Main = (function()
 
 		local clock = os.clock
 		local parseStart = clock()
-		for _,class in pairs(api.Classes) do
+		for _,class in ipairs(api.Classes) do
 			if clock() - parseStart > 0.015 then
 				task.wait()
 				parseStart = clock()
@@ -741,19 +742,18 @@ Main = (function()
 			newClass.Callbacks = {}
 			newClass.Tags = {}
 
-			if class.Tags then for c,tag in pairs(class.Tags) do newClass.Tags[tag] = true end end
-			for __,member in pairs(class.Members) do
+			if class.Tags then for c,tag in ipairs(class.Tags) do newClass.Tags[tag] = true end end
+			for __,member in ipairs(class.Members) do
 				local newMember = {}
 				newMember.Name = member.Name
 				newMember.Class = class.Name
 				newMember.Security = member.Security
 				newMember.Tags ={}
-				if member.Tags then for c,tag in pairs(member.Tags) do newMember.Tags[tag] = true end end
+				if member.Tags then for c,tag in ipairs(member.Tags) do newMember.Tags[tag] = true end end
 
 				local mType = member.MemberType
 				if mType == "Property" then
 					local propCategory = member.Category or "Other"
-					propCategory = propCategory:match("^%s*(.-)%s*$")
 					if not seenCategories[propCategory] then
 						categoryOrder[#categoryOrder+1] = propCategory
 						seenCategories[propCategory] = true
@@ -765,13 +765,13 @@ Main = (function()
 				elseif mType == "Function" then
 					newMember.Parameters = {}
 					newMember.ReturnType = member.ReturnType.Name
-					for c,param in pairs(member.Parameters) do
+					for c,param in ipairs(member.Parameters) do
 						table.insert(newMember.Parameters,{Name = param.Name, Type = param.Type.Name})
 					end
 					table.insert(newClass.Functions,newMember)
 				elseif mType == "Event" then
 					newMember.Parameters = {}
-					for c,param in pairs(member.Parameters) do
+					for c,param in ipairs(member.Parameters) do
 						table.insert(newMember.Parameters,{Name = param.Name, Type = param.Type.Name})
 					end
 					table.insert(newClass.Events,newMember)
@@ -785,14 +785,14 @@ Main = (function()
 			class.Superclass = classes[class.Superclass]
 		end
 
-		for _,enum in pairs(api.Enums) do
+		for _,enum in ipairs(api.Enums) do
 			local newEnum = {}
 			newEnum.Name = enum.Name
 			newEnum.Items = {}
 			newEnum.Tags = {}
 
-			if enum.Tags then for c,tag in pairs(enum.Tags) do newEnum.Tags[tag] = true end end
-			for __,item in pairs(enum.Items) do
+			if enum.Tags then for c,tag in ipairs(enum.Tags) do newEnum.Tags[tag] = true end end
+			for __,item in ipairs(enum.Items) do
 				local newItem = {}
 				newItem.Name = item.Name
 				newItem.Value = item.Value
@@ -872,34 +872,41 @@ Main = (function()
 		local clock = os.clock
 		local parseStart = clock()
 		local classes,enums = {},{}
-		for _,class in pairs(classList) do
+
+		local function capitalize(name)
+			local firstByte = name:byte(1)
+			if firstByte and firstByte >= 97 and firstByte <= 122 then
+				return string.char(firstByte - 32) .. name:sub(2)
+			end
+			return name
+		end
+
+		for _,class in ipairs(classList) do
 			if clock() - parseStart > 0.015 then
 				task.wait()
 				parseStart = clock()
 			end
 			local className = ""
-			for _,child in pairs(class.children) do
+			for _,child in ipairs(class.children) do
 				if child.tag == "Properties" then
 					local data = {Properties = {}, Functions = {}}
 					local props = child.children
-					for _,prop in pairs(props) do
-						local name = prop.attrs.name
-						name = name:sub(1,1):upper()..name:sub(2)
+					for _,prop in ipairs(props) do
+						local name = capitalize(prop.attrs.name)
 						data[name] = prop.children[1].text
 					end
 					className = data.Name
 					classes[className] = data
 				elseif child.attrs.class == "ReflectionMetadataProperties" then
 					local members = child.children
-					for _,member in pairs(members) do
+					for _,member in ipairs(members) do
 						if member.attrs.class == "ReflectionMetadataMember" then
 							local data = {}
 							if member.children[1].tag == "Properties" then
 								local props = member.children[1].children
-								for _,prop in pairs(props) do
+								for _,prop in ipairs(props) do
 									if prop.attrs then
-										local name = prop.attrs.name
-										name = name:sub(1,1):upper()..name:sub(2)
+										local name = capitalize(prop.attrs.name)
 										data[name] = prop.children[1].text
 									end
 								end
@@ -914,15 +921,14 @@ Main = (function()
 					end
 				elseif child.attrs.class == "ReflectionMetadataFunctions" then
 					local members = child.children
-					for _,member in pairs(members) do
+					for _,member in ipairs(members) do
 						if member.attrs.class == "ReflectionMetadataMember" then
 							local data = {}
 							if member.children[1].tag == "Properties" then
 								local props = member.children[1].children
-								for _,prop in pairs(props) do
+								for _,prop in ipairs(props) do
 									if prop.attrs then
-										local name = prop.attrs.name
-										name = name:sub(1,1):upper()..name:sub(2)
+										local name = capitalize(prop.attrs.name)
 										data[name] = prop.children[1].text
 									end
 								end
@@ -934,19 +940,18 @@ Main = (function()
 			end
 		end
 
-		for _,enum in pairs(enumList) do
+		for _,enum in ipairs(enumList) do
 			if clock() - parseStart > 0.015 then
 				task.wait()
 				parseStart = clock()
 			end
 			local enumName = ""
-			for _,child in pairs(enum.children) do
+			for _,child in ipairs(enum.children) do
 				if child.tag == "Properties" then
 					local data = {Items = {}}
 					local props = child.children
-					for _,prop in pairs(props) do
-						local name = prop.attrs.name
-						name = name:sub(1,1):upper()..name:sub(2)
+					for _,prop in ipairs(props) do
+						local name = capitalize(prop.attrs.name)
 						data[name] = prop.children[1].text
 					end
 					enumName = data.Name
@@ -955,9 +960,8 @@ Main = (function()
 					local data = {}
 					if child.children[1].tag == "Properties" then
 						local props = child.children[1].children
-						for _,prop in pairs(props) do
-							local name = prop.attrs.name
-							name = name:sub(1,1):upper()..name:sub(2)
+						for _,prop in ipairs(props) do
+							local name = capitalize(prop.attrs.name)
 							data[name] = prop.children[1].text
 						end
 						enums[enumName].Items[data.Name] = data
