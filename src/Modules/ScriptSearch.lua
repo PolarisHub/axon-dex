@@ -307,17 +307,18 @@ local function main()
 	ScriptSearch.Init = function()
 		local items = create({
 			{1,"Folder",{Name="ScriptSearchItems",}},
-			{2,"Frame",{BackgroundColor3=Color3.fromRGB(35,37,45),BorderSizePixel=0,Name="ToolBar",Parent={1},Size=UDim2.new(1,0,0,26),}},
-			{3,"Frame",{BackgroundColor3=Color3.fromRGB(30,30,35),BorderColor3=Color3.fromRGB(42,42,42),BorderSizePixel=0,Name="SearchFrame",Parent={2},Position=UDim2.new(0,3,0,3),Size=UDim2.new(1,-185,0,20),}},
-			{4,"TextBox",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ClearTextOnFocus=false,Font=3,Name="SearchBox",Parent={3},PlaceholderColor3=Color3.fromRGB(120,120,125),PlaceholderText="Search text in scripts...",Position=UDim2.new(0,4,0,0),Size=UDim2.new(1,-8,0,20),Text="",TextColor3=Color3.fromRGB(240,240,245),TextSize=14,TextXAlignment=0,}},
+			{2,"Frame",{BackgroundColor3=Settings.Theme.Main2,BorderSizePixel=0,Name="ToolBar",Parent={1},Size=UDim2.new(1,0,0,26),}},
+			{3,"Frame",{BackgroundColor3=Settings.Theme.TextBox,BorderSizePixel=0,Name="SearchFrame",Parent={2},Position=UDim2.new(0,3,0,3),Size=UDim2.new(1,-185,0,20),}},
+			{4,"TextBox",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ClearTextOnFocus=false,Font=3,Name="SearchBox",Parent={3},PlaceholderColor3=Settings.Theme.PlaceholderText,PlaceholderText="Search text in scripts...",Position=UDim2.new(0,4,0,0),Size=UDim2.new(1,-8,0,20),Text="",TextColor3=Settings.Theme.Text,TextSize=14,TextXAlignment=0,}},
 			{5,"UICorner",{CornerRadius=UDim.new(0,2),Parent={3},}},
-			{6,"UIStroke",{Thickness=1.4,Parent={3},Color=Color3.fromRGB(42,42,42)}},
-			{7,"TextLabel",{BackgroundTransparency=1,Font=3,Name="Status",Parent={2},Position=UDim2.new(1,-175,0,3),Size=UDim2.new(0,100,0,20),Text="Ready",TextColor3=Color3.fromRGB(150,150,155),TextSize=11,TextXAlignment=0,}},
-			{8,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.fromRGB(45,120,245),BorderSizePixel=0,Font=4,Name="SearchBtn",Parent={2},Position=UDim2.new(1,-70,0,3),Size=UDim2.new(0,65,0,20),Text="Search",TextColor3=Color3.new(1,1,1),TextSize=13,}},
+			{6,"UIStroke",{Thickness=1.4,Parent={3},Color=Settings.Theme.Outline3}},
+			{7,"TextLabel",{BackgroundTransparency=1,Font=3,Name="Status",Parent={2},Position=UDim2.new(1,-175,0,3),Size=UDim2.new(0,100,0,20),Text="Ready",TextColor3=Settings.Theme.PlaceholderText,TextSize=11,TextXAlignment=0,}},
+			{8,"TextButton",{AutoButtonColor=false,BackgroundColor3=Settings.Theme.Highlight,BorderSizePixel=0,Font=4,Name="SearchBtn",Parent={2},Position=UDim2.new(1,-70,0,3),Size=UDim2.new(0,65,0,20),Text="Search",TextColor3=Color3.new(1,1,1),TextSize=13,}},
 			{9,"UICorner",{CornerRadius=UDim.new(0,2),Parent={8},}},
 			{10,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.fromRGB(245,60,60),BorderSizePixel=0,Font=4,Name="StopBtn",Parent={2},Position=UDim2.new(1,-70,0,3),Size=UDim2.new(0,65,0,20),Text="Stop",TextColor3=Color3.new(1,1,1),TextSize=13,Visible=false,}},
 			{11,"UICorner",{CornerRadius=UDim.new(0,2),Parent={10},}},
 			{12,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ClipsDescendants=true,Name="List",Parent={1},Position=UDim2.new(0,0,0,27),Size=UDim2.new(1,0,1,-27),}},
+			{13,"Frame",{BackgroundColor3=Settings.Theme.Outline1,BorderSizePixel=0,Name="Line",Parent={2},Position=UDim2.new(0,0,1,-1),Size=UDim2.new(1,0,0,1),}},
 		})
 
 		toolBar = items.ToolBar
