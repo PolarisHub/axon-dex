@@ -65,7 +65,7 @@ end
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, ScriptTree, RemoteTree, AssetTree, DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, ScriptTree, RemoteTree, AssetTree, ScriptSearch, DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -204,7 +204,7 @@ end
 Main = (function()
 	local Main = {}
 
-	Main.ModuleList = {"Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","ScriptTree","RemoteTree","AssetTree"}
+	Main.ModuleList = {"Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","ScriptTree","RemoteTree","AssetTree","ScriptSearch"}
 	Main.Elevated = false
 	Main.AllowDraggableOnMobile = true
 	Main.MissingEnv = {}
@@ -357,6 +357,7 @@ Main = (function()
 		ScriptTree = Apps.ScriptTree
 		RemoteTree = Apps.RemoteTree
 		AssetTree = Apps.AssetTree
+		ScriptSearch = Apps.ScriptSearch
 
 		local appTable = {
 			Explorer = Explorer,
@@ -369,7 +370,8 @@ Main = (function()
 			SettingsWindow = SettingsWindow,
 			ScriptTree = ScriptTree,
 			RemoteTree = RemoteTree,
-			AssetTree = AssetTree
+			AssetTree = AssetTree,
+			ScriptSearch = ScriptSearch
 		}
 
 		Main.AppControls.Lib.InitAfterMain(appTable)
@@ -1460,6 +1462,7 @@ Main = (function()
 		SettingsWindow.Init()
 		RemoteTree.Init()
 		AssetTree.Init()
+		ScriptSearch.Init()
 
 		if env.readfile and listfiles then
 			if #listfiles("axon/plugins") > 0 then

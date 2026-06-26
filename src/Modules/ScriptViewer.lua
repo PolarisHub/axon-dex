@@ -257,7 +257,7 @@ local function main()
 		end)
 	end
 
-	ScriptViewer.ViewScript = function(scr)
+	ScriptViewer.ViewScript = function(scr, lineIndex)
 		local oldtick = tick()
 		local s,source = pcall(env.decompile or function() end,scr)
 
@@ -298,6 +298,13 @@ local function main()
 
 		codeFrame:SetText(source)
 		window:Show()
+		if lineIndex then
+			task.defer(function()
+				if codeFrame.ScrollV then
+					codeFrame.ScrollV:ScrollTo(lineIndex)
+				end
+			end)
+		end
 	end
 
 	return ScriptViewer
