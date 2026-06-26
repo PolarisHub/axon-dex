@@ -206,24 +206,28 @@ local function main()
 
 		-- Continuation verticals for ancestors above the parent.
 		local guideCount = 0
+		local child_a = node
 		local a = node.Parent
 		while a do
 			local d = a.Depth
-			if d >= 1 and d <= depth - 2 and not a.VisibleIsLast then
-				guideCount = guideCount + 1
-				local g = guides[guideCount]
-				if not g then
-					g = Instance.new("Frame")
-					g.BorderSizePixel = 0
-					g.BackgroundColor3 = LINE_COLOR
-					g.ZIndex = 2
-					g.Parent = entry.Lines
-					guides[guideCount] = g
+			if d >= 1 and d <= depth - 2 then
+				if not child_a.VisibleIsLast then
+					guideCount = guideCount + 1
+					local g = guides[guideCount]
+					if not g then
+						g = Instance.new("Frame")
+						g.BorderSizePixel = 0
+						g.BackgroundColor3 = LINE_COLOR
+						g.ZIndex = 2
+						g.Parent = entry.Lines
+						guides[guideCount] = g
+					end
+					g.Position = UDim2.new(0, d * INDENT + GUIDE, 0, 0)
+					g.Size = UDim2.new(0, 1, 1, 0)
+					g.Visible = true
 				end
-				g.Position = UDim2.new(0, d * INDENT + GUIDE, 0, 0)
-				g.Size = UDim2.new(0, 1, 1, 0)
-				g.Visible = true
 			end
+			child_a = a
 			a = a.Parent
 		end
 
