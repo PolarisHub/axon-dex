@@ -159,7 +159,7 @@ local function main()
 					p = p + 1
 				end
 				if sub(source, p, p) == "[" then
-					return readLongString(eqCount)
+					return "--" .. readLongString(eqCount)
 				end
 			end
 			-- standard single line comment
@@ -171,6 +171,79 @@ local function main()
 				pos = len + 1
 				return sub(source, start, len)
 			end
+		end
+
+		local function isDigit(char)
+			local charByte = byte(char or "")
+			return charByte and charByte >= 48 and charByte <= 57
+		end
+
+		local function isHexDigit(char)
+			local charByte = byte(char or "")
+			return charByte and ((charByte >= 48 and charByte <= 57) or (charByte >= 65 and charByte <= 70) or (charByte >= 97 and charByte <= 102))
+		end
+
+		local function readNumber()
+			local start = pos
+			local first = sub(source, pos, pos)
+
+			if first == "." then
+				pos = pos + 1
+				while isDigit(sub(source, pos, pos)) do
+					pos = pos + 1
+				end
+			elseif first == "0" and (sub(source, pos + 1, pos + 1) == "x" or sub(source, pos + 1, pos + 1) == "X") then
+				pos = pos + 2
+				while isHexDigit(sub(source, pos, pos)) or sub(source, pos, pos) == "_" do
+					pos = pos + 1
+				end
+				if sub(source, pos, pos) == "." then
+					pos = pos + 1
+					while isHexDigit(sub(source, pos, pos)) or sub(source, pos, pos) == "_" do
+						pos = pos + 1
+					end
+				end
+				if sub(source, pos, pos):lower() == "p" then
+					local expStart = pos
+					pos = pos + 1
+					if sub(source, pos, pos) == "+" or sub(source, pos, pos) == "-" then
+						pos = pos + 1
+					end
+					if isDigit(sub(source, pos, pos)) then
+						while isDigit(sub(source, pos, pos)) or sub(source, pos, pos) == "_" do
+							pos = pos + 1
+						end
+					else
+						pos = expStart
+					end
+				end
+			else
+				while isDigit(sub(source, pos, pos)) or sub(source, pos, pos) == "_" do
+					pos = pos + 1
+				end
+				if sub(source, pos, pos) == "." and sub(source, pos + 1, pos + 1) ~= "." then
+					pos = pos + 1
+					while isDigit(sub(source, pos, pos)) or sub(source, pos, pos) == "_" do
+						pos = pos + 1
+					end
+				end
+				if sub(source, pos, pos):lower() == "e" then
+					local expStart = pos
+					pos = pos + 1
+					if sub(source, pos, pos) == "+" or sub(source, pos, pos) == "-" then
+						pos = pos + 1
+					end
+					if isDigit(sub(source, pos, pos)) then
+						while isDigit(sub(source, pos, pos)) or sub(source, pos, pos) == "_" do
+							pos = pos + 1
+						end
+					else
+						pos = expStart
+					end
+				end
+			end
+
+			return sub(source, start, pos - 1)
 		end
 
 		while pos <= len do
@@ -256,44 +329,29 @@ local function main()
 				}
 
 			-- 5. Numbers
-			elseif (b >= 48 and b <= 57) or (char == "." and byte(sub(source, pos + 1, pos + 1)) and byte(sub(source, pos + 1, pos + 1)) >= 48 and byte(sub(source, pos + 1, pos + 1)) <= 57) then
-				local start = pos
-				pos = pos + 1
-				local isHex = false
-				if char == "0" and (sub(source, pos, pos) == "x" or sub(source, pos, pos) == "X") then
-					isHex = true
-					pos = pos + 1
-				end
-				while pos <= len do
-					local c = sub(source, pos, pos)
-					local cb = byte(c)
-					if not cb then break end
-					if isHex then
-						if (cb >= 48 and cb <= 57) or (cb >= 65 and cb <= 70) or (cb >= 97 and cb <= 102) then
-							pos = pos + 1
-						else
-							break
-						end
-					else
-						if (cb >= 48 and cb <= 57) or c == "." or c == "e" or c == "E" or c == "+" or c == "-" then
-							pos = pos + 1
-						else
-							break
-						end
-					end
-				end
+			elseif isDigit(char) or (char == "." and isDigit(sub(source, pos + 1, pos + 1))) then
+				local content = readNumber()
 				tokens[#tokens + 1] = {
 					Type = "Number",
-					Value = sub(source, start, pos - 1)
+					Value = content
 				}
 
 			-- 6. Operators
 			else
+				local three = sub(source, pos, pos + 2)
+				local two = sub(source, pos, pos + 1)
+				local compound
+				if three == "..." or three == "//=" or three == "..=" then
+					compound = three
+				elseif two == "==" or two == "~=" or two == "<=" or two == ">=" or two == ".." or two == "::" or two == "->" or two == "//" or two == "+=" or two == "-=" or two == "*=" or two == "/=" or two == "%=" or two == "^=" then
+					compound = two
+				end
+
 				tokens[#tokens + 1] = {
 					Type = "Operator",
-					Value = char
+					Value = compound or char
 				}
-				pos = pos + 1
+				pos = pos + #(compound or char)
 			end
 		end
 		return tokens
@@ -940,11 +998,339 @@ local function main()
 		return table.concat(cleanedLines, "\n")
 	end
 
+	local function beautifyTokensImproved(subTokens, baseIndentStr)
+		baseIndentStr = baseIndentStr or ""
+
+		local INDENT = "    "
+		local tokens = {}
+		for i = 1, #subTokens do
+			local token = subTokens[i]
+			if token.Type ~= "Whitespace" then
+				tokens[#tokens + 1] = token
+			end
+		end
+
+		local BINARY_OPS = {
+			["+"] = true, ["-"] = true, ["*"] = true, ["/"] = true, ["//"] = true, ["%"] = true, ["^"] = true,
+			["="] = true, ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true, ["//="] = true, ["%="] = true, ["^="] = true, ["..="] = true,
+			["=="] = true, ["~="] = true, ["<="] = true, [">="] = true, ["<"] = true, [">"] = true,
+			[".."] = true, ["and"] = true, ["or"] = true, ["->"] = true
+		}
+
+		local STARTERS = {
+			["local"] = true, ["function"] = true, ["if"] = true, ["while"] = true, ["for"] = true,
+			["repeat"] = true, ["return"] = true, ["break"] = true, ["continue"] = true,
+			["else"] = true, ["elseif"] = true, ["end"] = true, ["until"] = true
+		}
+
+		local CLOSERS = {
+			["end"] = true, ["until"] = true, ["else"] = true, ["elseif"] = true
+		}
+
+		local function isWord(token)
+			return token and (token.Type == "Identifier" or token.Type == "Keyword" or token.Type == "Number" or token.Type == "String")
+		end
+
+		local function previousSignificant(index)
+			for i = index - 1, 1, -1 do
+				if tokens[i].Type ~= "Whitespace" then
+					return tokens[i]
+				end
+			end
+			return nil
+		end
+
+		local function nextSignificant(index)
+			for i = index + 1, #tokens do
+				if tokens[i].Type ~= "Whitespace" then
+					return tokens[i]
+				end
+			end
+			return nil
+		end
+
+		local function isUnary(token, prevToken)
+			if not token then return false end
+			local value = token.Value
+			if value ~= "-" and value ~= "not" and value ~= "#" then return false end
+			if not prevToken then return true end
+			local prevValue = prevToken.Value
+			return BINARY_OPS[prevValue] or prevValue == "(" or prevValue == "[" or prevValue == "{" or prevValue == "," or prevValue == ";" or prevValue == "then" or prevValue == "do" or prevValue == "return"
+		end
+
+		local out = {}
+		local indent = 0
+		local atLineStart = true
+		local wroteCodeOnLine = false
+		local parenDepth, braceDepth, bracketDepth = 0, 0, 0
+		local tableMultiline = {}
+		local functionParamDepth = nil
+		local pendingFunction = false
+		local functionAwaitingTypedBody = false
+		local prevToken = nil
+		local prevPrevToken = nil
+
+		local function currentIndent()
+			return baseIndentStr .. string.rep(INDENT, indent)
+		end
+
+		local function writeRaw(text)
+			out[#out + 1] = text
+		end
+
+		local function write(text)
+			if atLineStart then
+				writeRaw(currentIndent())
+				atLineStart = false
+			end
+			writeRaw(text)
+			if text:find("%S") then
+				wroteCodeOnLine = true
+			end
+		end
+
+		local function newline(force)
+			if atLineStart and not force then return end
+			writeRaw("\n")
+			atLineStart = true
+			wroteCodeOnLine = false
+			prevToken = nil
+			prevPrevToken = nil
+		end
+
+		local function lineHasContent()
+			return wroteCodeOnLine and not atLineStart
+		end
+
+		local function shouldSplitBefore(token, index)
+			if not lineHasContent() or parenDepth > 0 or braceDepth > 0 or bracketDepth > 0 then
+				return false
+			end
+
+			local value = token.Value
+			if not STARTERS[value] then return false end
+
+			local prev = previousSignificant(index)
+			if value == "function" and prev and prev.Value == "local" then
+				return false
+			end
+			if value == "function" and prev and (prev.Value == "=" or prev.Value == "(" or prev.Value == "," or prev.Value == "return") then
+				return false
+			end
+			if value == "if" and prev and (prev.Value == "elseif" or prev.Value == "return" or prev.Value == "=" or prev.Value == "(" or prev.Value == ",") then
+				return false
+			end
+			return true
+		end
+
+		local function needsSpace(prev, token, nextToken)
+			if not prev or atLineStart then return "" end
+
+			local prevValue = prev.Value
+			local value = token.Value
+
+			if value == "," or value == ";" or value == ")" or value == "]" or value == "}" then return "" end
+			if prevValue == "(" or prevValue == "[" or prevValue == "{" then return "" end
+			if value == "." or prevValue == "." or value == "..." or prevValue == "..." then return "" end
+			if value == ":" then return "" end
+			if prevValue == ":" then
+				if nextToken and nextToken.Value == "(" then return "" end
+				if prevPrevToken and (prevPrevToken.Type == "Identifier" or prevPrevToken.Value == ")") then return " " end
+				return ""
+			end
+			if value == "::" or prevValue == "::" then return " " end
+
+			if value == "(" then
+				if prev.Type == "Identifier" or prevValue == ")" or prevValue == "]" or prevValue == "self" then
+					return ""
+				end
+				if prevValue == "function" then return "" end
+				return " "
+			end
+
+			if value == "{" then
+				if prevValue == "=" or prevValue == "return" then return " " end
+				if prevValue == "(" or prevValue == "," then return "" end
+				return " "
+			end
+
+			if isUnary(token, prev) then
+				return (value == "not" or prevValue == "return") and " " or ""
+			end
+			if BINARY_OPS[value] or (BINARY_OPS[prevValue] and not isUnary(prev, prevPrevToken)) then
+				return " "
+			end
+
+			if prevValue == "," then return "" end
+			if prev.Type == "Keyword" or token.Type == "Keyword" then return " " end
+			if isWord(prev) and isWord(token) then return " " end
+
+			return ""
+		end
+
+		local function countTableComplexity(startIndex)
+			local depth = 0
+			local commas = 0
+			local nestedTables = 0
+			for index = startIndex, #tokens do
+				local value = tokens[index].Value
+				if value == "{" then
+					depth = depth + 1
+					if depth > 1 then nestedTables = nestedTables + 1 end
+				elseif value == "}" then
+					depth = depth - 1
+					if depth == 0 then break end
+				elseif value == "," and depth == 1 then
+					commas = commas + 1
+				end
+			end
+			return commas >= 3 or nestedTables > 0
+		end
+
+		for index = 1, #tokens do
+			local token = tokens[index]
+			local value = token.Value
+			local nextToken = nextSignificant(index)
+
+			if functionAwaitingTypedBody and STARTERS[value] then
+				newline()
+				if value ~= "end" then
+					indent = indent + 1
+				end
+				functionAwaitingTypedBody = false
+			end
+
+			if shouldSplitBefore(token, index) then
+				newline()
+			end
+
+			if CLOSERS[value] then
+				if lineHasContent() then newline() end
+				indent = math.max(0, indent - 1)
+			end
+
+			if token.Type == "Comment" then
+				if lineHasContent() then write(" ") end
+				write(value)
+				local endedLine = false
+				if not value:find("%]%]") then
+					newline()
+					endedLine = true
+				end
+				if endedLine then
+					prevPrevToken = nil
+					prevToken = nil
+				else
+					prevPrevToken = prevToken
+					prevToken = token
+				end
+				continue
+			end
+
+			if value == "{" then
+				write(needsSpace(prevToken, token, nextToken))
+				write("{")
+				braceDepth = braceDepth + 1
+				if countTableComplexity(index) then
+					tableMultiline[braceDepth] = true
+					indent = indent + 1
+					newline()
+				end
+				prevPrevToken = prevToken
+				prevToken = token
+				continue
+			elseif value == "}" then
+				if tableMultiline[braceDepth] then
+					if lineHasContent() then newline() end
+					indent = math.max(0, indent - 1)
+					tableMultiline[braceDepth] = nil
+				end
+				write(needsSpace(prevToken, token, nextToken))
+				write("}")
+				braceDepth = math.max(0, braceDepth - 1)
+				prevPrevToken = prevToken
+				prevToken = token
+				continue
+			elseif value == "," then
+				write(",")
+				if tableMultiline[braceDepth] then
+					newline()
+				elseif nextToken and nextToken.Value ~= ")" and nextToken.Value ~= "]" and nextToken.Value ~= "}" then
+					write(" ")
+				end
+				prevPrevToken = prevToken
+				prevToken = token
+				continue
+			elseif value == ";" then
+				newline()
+				prevPrevToken = prevToken
+				prevToken = token
+				continue
+			end
+
+			write(needsSpace(prevToken, token, nextToken))
+			write(value)
+
+			if value == "(" then
+				parenDepth = parenDepth + 1
+				if pendingFunction and not functionParamDepth then
+					functionParamDepth = parenDepth
+				end
+			elseif value == ")" then
+				parenDepth = math.max(0, parenDepth - 1)
+				if functionParamDepth and parenDepth < functionParamDepth then
+					functionParamDepth = nil
+					pendingFunction = false
+					if nextToken and nextToken.Value == ":" then
+						functionAwaitingTypedBody = true
+					else
+						newline()
+						indent = indent + 1
+					end
+				end
+			elseif value == "[" then
+				bracketDepth = bracketDepth + 1
+			elseif value == "]" then
+				bracketDepth = math.max(0, bracketDepth - 1)
+			elseif value == "function" then
+				pendingFunction = true
+				functionParamDepth = nil
+			elseif value == "then" or value == "do" then
+				newline()
+				indent = indent + 1
+			elseif value == "repeat" then
+				newline()
+				indent = indent + 1
+			elseif value == "else" then
+				newline()
+				indent = indent + 1
+			elseif value == "end" then
+				if nextToken and (nextToken.Value == ")" or nextToken.Value == "]" or nextToken.Value == "," or nextToken.Value == "." or nextToken.Value == ":") then
+					-- Expression contexts may continue after an anonymous function.
+				else
+					newline()
+				end
+			elseif value == "until" then
+				-- Keep the repeat condition on this line.
+			end
+
+			prevPrevToken = prevToken
+			prevToken = token
+		end
+
+		local formatted = table.concat(out, "")
+		formatted = formatted:gsub("[ \t]+\n", "\n")
+		formatted = formatted:gsub("\n\n\n+", "\n\n")
+		formatted = formatted:gsub("^%s*\n+", "")
+		formatted = formatted:gsub("%s+$", "")
+		return formatted
+	end
+
 	DecompilerHelper.BeautifyCode = function(codeFrame)
 		if not codeFrame then return end
 		local source = codeFrame:GetText()
 		local tokens = tokenize(source)
-		local formatted = beautifyTokens(tokens, "")
+		local formatted = beautifyTokensImproved(tokens, "")
 		codeFrame:SetText(formatted)
 		warn("[DecompilerHelper] Source code formatted successfully.")
 	end
@@ -978,7 +1364,7 @@ local function main()
 			end
 		end
 
-		local formattedFuncText = beautifyTokens(funcTokens, baseIndentStr)
+		local formattedFuncText = beautifyTokensImproved(funcTokens, baseIndentStr)
 
 		-- Construct the new tokens list replacing the function range with a single formatted string token
 		local newTokens = {}

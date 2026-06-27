@@ -4381,7 +4381,7 @@ local function main()
 			findBox.PlaceholderColor3 = Settings.Theme.PlaceholderText
 			findBox.PlaceholderText = "Find"
 			findBox.Position = UDim2.new(0, 6, 0, 0)
-			findBox.Size = UDim2.new(1, -96, 1, 0)
+			findBox.Size = UDim2.new(1, -118, 1, 0)
 			findBox.Text = ""
 			findBox.TextColor3 = Settings.Theme.Text
 			findBox.TextSize = 14
@@ -4393,8 +4393,8 @@ local function main()
 			findCount.Name = "Count"
 			findCount.BackgroundTransparency = 1
 			findCount.Font = Enum.Font.Code
-			findCount.Position = UDim2.new(1, -90, 0, 0)
-			findCount.Size = UDim2.new(0, 34, 1, 0)
+			findCount.Position = UDim2.new(1, -112, 0, 0)
+			findCount.Size = UDim2.new(0, 50, 1, 0)
 			findCount.Text = "0/0"
 			findCount.TextColor3 = Settings.Theme.Text
 			findCount.TextSize = 12
@@ -4404,11 +4404,14 @@ local function main()
 
 			local findPrev = Instance.new("TextButton")
 			findPrev.Name = "Prev"
-			findPrev.BackgroundTransparency = 1
-			findPrev.Font = Enum.Font.Code
-			findPrev.Position = UDim2.new(1, -54, 0, 0)
-			findPrev.Size = UDim2.new(0, 18, 1, 0)
-			findPrev.Text = "↑"
+			findPrev.AutoButtonColor = true
+			findPrev.BackgroundColor3 = Settings.Theme.Button
+			findPrev.BackgroundTransparency = 0.15
+			findPrev.BorderSizePixel = 0
+			findPrev.Font = Enum.Font.SourceSansBold
+			findPrev.Position = UDim2.new(1, -60, 0, 2)
+			findPrev.Size = UDim2.new(0, 18, 1, -4)
+			findPrev.Text = "▲"
 			findPrev.TextColor3 = Settings.Theme.Text
 			findPrev.TextSize = 14
 			findPrev.ZIndex = 21
@@ -4416,11 +4419,14 @@ local function main()
 
 			local findNext = Instance.new("TextButton")
 			findNext.Name = "Next"
-			findNext.BackgroundTransparency = 1
-			findNext.Font = Enum.Font.Code
-			findNext.Position = UDim2.new(1, -36, 0, 0)
-			findNext.Size = UDim2.new(0, 18, 1, 0)
-			findNext.Text = "↓"
+			findNext.AutoButtonColor = true
+			findNext.BackgroundColor3 = Settings.Theme.Button
+			findNext.BackgroundTransparency = 0.15
+			findNext.BorderSizePixel = 0
+			findNext.Font = Enum.Font.SourceSansBold
+			findNext.Position = UDim2.new(1, -40, 0, 2)
+			findNext.Size = UDim2.new(0, 18, 1, -4)
+			findNext.Text = "▼"
 			findNext.TextColor3 = Settings.Theme.Text
 			findNext.TextSize = 14
 			findNext.ZIndex = 21
@@ -4429,7 +4435,7 @@ local function main()
 			local findClose = Instance.new("TextButton")
 			findClose.Name = "Close"
 			findClose.BackgroundTransparency = 1
-			findClose.Font = Enum.Font.Code
+			findClose.Font = Enum.Font.SourceSansBold
 			findClose.Position = UDim2.new(1, -18, 0, 0)
 			findClose.Size = UDim2.new(0, 18, 1, 0)
 			findClose.Text = "×"
@@ -4539,11 +4545,48 @@ local function main()
 			local matches = self.FindMatches or {}
 			local count = #matches
 			local index = self.FindIndex or 0
+			if count > 0 and (index < 1 or index > count) then
+				index = 1
+				self.FindIndex = index
+			end
 			countLabel.Text = count > 0 and (tostring(index) .. "/" .. tostring(count)) or "0/0"
 			countLabel.TextColor3 = count > 0 and Settings.Theme.Text or Color3.fromRGB(220, 90, 90)
 		end
 
-		funcs.RebuildFindMatches = function(self)
+		funcs.GetFindAnchor = function(self)
+			local line = self.FindAnchorLine or (self.CursorY + 1)
+			local column = self.FindAnchorColumn or (self.CursorX + 1)
+			return line, column
+		end
+
+		funcs.GetFindIndexFromPosition = function(self, line, column, backwards, includeCurrent)
+			local matches = self.FindMatches or {}
+			if #matches == 0 then return 0 end
+
+			if backwards then
+				for index = #matches, 1, -1 do
+					local match = matches[index]
+					local beforeLine = match.Line < line
+					local beforeColumn = match.Line == line and (includeCurrent and match.Start <= column or match.Start < column)
+					if beforeLine or beforeColumn then
+						return index
+					end
+				end
+				return #matches
+			end
+
+			for index = 1, #matches do
+				local match = matches[index]
+				local afterLine = match.Line > line
+				local afterColumn = match.Line == line and (includeCurrent and match.Start >= column or match.Start > column)
+				if afterLine or afterColumn then
+					return index
+				end
+			end
+			return 1
+		end
+
+		funcs.RebuildFindMatches = function(self, selectMatch)
 			local query = self.FindQuery or ""
 			local matches = {}
 			local matchesByLine = {}
@@ -4577,15 +4620,20 @@ local function main()
 				end
 			end
 
-			self:UpdateFindCount()
-			self:Refresh()
+			if selectMatch and #matches > 0 then
+				local line, column = self:GetFindAnchor()
+				self:SelectFindMatch(self:GetFindIndexFromPosition(line, column, false, true))
+			else
+				self:UpdateFindCount()
+				self:Refresh()
+			end
 		end
 
 		funcs.SetFindQuery = function(self, query)
 			query = query or ""
 			if self.FindQuery == query then return end
 			self.FindQuery = query
-			self:RebuildFindMatches()
+			self:RebuildFindMatches(true)
 		end
 
 		funcs.SelectFindMatch = function(self, index)
@@ -4615,7 +4663,10 @@ local function main()
 			end
 
 			local current = self.FindIndex or 0
-			if backwards then
+			if current < 1 or current > #matches then
+				local line, column = self:GetFindAnchor()
+				current = self:GetFindIndexFromPosition(line, column, backwards, false)
+			elseif backwards then
 				current = current <= 1 and #matches or current - 1
 			else
 				current = current >= #matches and 1 or current + 1
@@ -4639,19 +4690,30 @@ local function main()
 				initialQuery = getWordAt(line, self.CursorX + 1)
 			end
 
+			if self:IsValidRange() then
+				self.FindAnchorLine = self.SelectionRange[1][2] + 1
+				self.FindAnchorColumn = self.SelectionRange[1][1] + 1
+			else
+				self.FindAnchorLine = self.CursorY + 1
+				self.FindAnchorColumn = self.CursorX + 1
+			end
+
 			elems.FindBar.Visible = true
 			if initialQuery and initialQuery ~= "" then
 				elems.FindBox.Text = initialQuery
 				self:SetFindQuery(initialQuery)
 			else
-				self:RebuildFindMatches()
+				self:RebuildFindMatches(true)
 			end
 			elems.FindBox:CaptureFocus()
 			elems.FindBox.SelectionStart = 1
 			elems.FindBox.CursorPosition = #elems.FindBox.Text + 1
 			local matches = self.FindMatches or {}
-			if #matches > 0 and (self.FindIndex or 0) == 0 then
-				self:FindNext(false)
+			if #matches > 0 and ((self.FindIndex or 0) < 1 or (self.FindIndex or 0) > #matches) then
+				local line, column = self:GetFindAnchor()
+				self:SelectFindMatch(self:GetFindIndexFromPosition(line, column, false, true))
+			else
+				self:UpdateFindCount()
 			end
 		end
 
@@ -4663,6 +4725,8 @@ local function main()
 			self.FindMatches = {}
 			self.FindMatchesByLine = {}
 			self.FindIndex = 0
+			self.FindAnchorLine = nil
+			self.FindAnchorColumn = nil
 			self:UpdateFindCount()
 			self:Refresh()
 			self:SetEditing(true)
@@ -5704,7 +5768,7 @@ local function main()
 			self:MapNewLines()
 			self:PreHighlight()
 			if self.FindQuery and self.FindQuery ~= "" then
-				self:RebuildFindMatches()
+				self:RebuildFindMatches(true)
 			else
 				self:Refresh()
 			end
@@ -5786,6 +5850,8 @@ local function main()
 				FindMatches = {},
 				FindMatchesByLine = {},
 				FindIndex = 0,
+				FindAnchorLine = nil,
+				FindAnchorColumn = nil,
 				SelectionRange = {{-1,-1},{-1,-1}},
 				NewLines = {},
 				FrameOffsets = Vector2.new(0,0),
