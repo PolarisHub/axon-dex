@@ -100,13 +100,28 @@ local function main()
 		return table.concat(parts, "/")
 	end
 
+	local function trim(str)
+		return tostring(str or ""):match("^%s*(.-)%s*$")
+	end
+
+	local function safeToString(val, maxLen)
+		local ok, text = pcall(tostring, val)
+		if not ok then
+			text = "<tostring failed>"
+		end
+		if maxLen and #text > maxLen then
+			return text:sub(1, maxLen) .. "..."
+		end
+		return text
+	end
+
 	local function formatValue(val, valType)
 		if valType == "string" then
-			return '"' .. tostring(val) .. '"'
+			return '"' .. safeToString(val, 500) .. '"'
 		elseif valType == "nil" then
 			return "nil"
 		elseif valType == "table" then
-			return "Table: " .. tostring(val)
+			return "Table: " .. safeToString(val, 200)
 		elseif valType == "function" then
 			local name = "anonymous"
 			local getinfo = (debug and (debug.getinfo or debug.info)) or getinfo
@@ -117,9 +132,9 @@ local function main()
 			if resolvedNames[val] then
 				name = resolvedNames[val] .. " (" .. name .. ")"
 			end
-			return ("Function: %s (%s)"):format(name, tostring(val))
+			return ("Function: %s (%s)"):format(name, safeToString(val, 160))
 		elseif valType == "userdata" or typeof(val) == "Instance" then
-			local str = tostring(val)
+			local str = safeToString(val, 200)
 			local name = str
 			pcall(function()
 				if typeof(val) == "Instance" then
@@ -137,7 +152,7 @@ local function main()
 			end)
 			return name
 		else
-			return tostring(val)
+			return safeToString(val, 500)
 		end
 	end
 
@@ -180,29 +195,206 @@ local function main()
 		end
 	end
 
-	local function parseValue(valStr, targetType)
-		if targetType == "number" then
-			return tonumber(valStr)
-		elseif targetType == "boolean" then
-			local lower = valStr:lower()
-			if lower == "true" then return true
-			elseif lower == "false" then return false
-			end
-			return nil
-		elseif targetType == "string" then
-			return valStr
-		elseif targetType == "Vector3" then
-			local x, y, z = valStr:match("([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)")
-			if x and y and z then
-				return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
-			end
-		elseif targetType == "Color3" then
-			local r, g, b = valStr:match("([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)")
-			if r and g and b then
-				return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
-			end
+	local function getEditableType(node)
+		local editableType = node and (node.EditableType or node.Type)
+		if editableType == "Upvalue" or editableType == "Constant" or editableType == "TableValue" then
+			return editableType
 		end
-		return nil
+	end
+
+	local function isEditableNode(node)
+		return getEditableType(node) ~= nil
+	end
+
+	local function parseNumberList(text, expected)
+		local values = {}
+		for piece in tostring(text):gmatch("[^,]+") do
+			local numberValue = tonumber(trim(piece))
+			if numberValue == nil then
+				return nil
+			end
+			values[#values + 1] = numberValue
+		end
+		if #values ~= expected then
+			return nil
+		end
+		return values
+	end
+
+	local function parseExpression(expr)
+		local loader = (env and env.loadstring) or loadstring
+		if not loader then
+			return false, "loadstring is not available"
+		end
+
+		local chunk, compileErr = loader("return " .. expr)
+		if not chunk then
+			chunk, compileErr = loader(expr)
+		end
+		if not chunk then
+			return false, compileErr or "compile failed"
+		end
+
+		local ok, result = pcall(chunk)
+		if not ok then
+			return false, result
+		end
+		return true, result
+	end
+
+	local function isExpressionEdit(text, targetType)
+		local trimmed = trim(text)
+		return trimmed:sub(1, 1) == "="
+			or (targetType == "table" and trimmed:sub(1, 1) == "{")
+			or (targetType == "function" and trimmed:sub(1, 8) == "function")
+	end
+
+	local function parseValue(valStr, targetType, allowExpressions)
+		if allowExpressions == nil then allowExpressions = true end
+		local raw = tostring(valStr or "")
+		local trimmed = trim(raw)
+
+		if trimmed:sub(1, 1) == "=" then
+			if not allowExpressions then
+				return false, "expression runs on confirm"
+			end
+			return parseExpression(trimmed:sub(2))
+		end
+
+		if targetType ~= "string" and trimmed == "nil" then
+			return true, nil
+		end
+
+		if targetType == "number" then
+			local numberValue = tonumber(trimmed)
+			if numberValue ~= nil then
+				return true, numberValue
+			end
+			return false, "expected number"
+		elseif targetType == "boolean" then
+			local lower = trimmed:lower()
+			if lower == "true" then return true, true end
+			if lower == "false" then return true, false end
+			return false, "expected true or false"
+		elseif targetType == "string" then
+			return true, raw
+		elseif targetType == "nil" then
+			if trimmed == "nil" or trimmed == "" then
+				return true, nil
+			end
+			return false, "expected nil or =expression"
+		elseif targetType == "Vector3" then
+			local values = parseNumberList(trimmed, 3)
+			if values then
+				return true, Vector3.new(values[1], values[2], values[3])
+			end
+			return false, "expected x, y, z or =Vector3.new(...)"
+		elseif targetType == "Vector2" then
+			local values = parseNumberList(trimmed, 2)
+			if values then
+				return true, Vector2.new(values[1], values[2])
+			end
+			return false, "expected x, y or =Vector2.new(...)"
+		elseif targetType == "Color3" then
+			local values = parseNumberList(trimmed, 3)
+			if values then
+				return true, Color3.fromRGB(values[1], values[2], values[3])
+			end
+			return false, "expected r, g, b or =Color3.new(...)"
+		elseif targetType == "UDim" then
+			local values = parseNumberList(trimmed, 2)
+			if values then
+				return true, UDim.new(values[1], values[2])
+			end
+			return false, "expected scale, offset or =UDim.new(...)"
+		elseif targetType == "UDim2" then
+			local values = parseNumberList(trimmed, 4)
+			if values then
+				return true, UDim2.new(values[1], values[2], values[3], values[4])
+			end
+			return false, "expected sx, ox, sy, oy or =UDim2.new(...)"
+		elseif targetType == "BrickColor" then
+			if trimmed ~= "" then
+				local ok, brickColor = pcall(BrickColor.new, tonumber(trimmed) or trimmed)
+				if ok then
+					return true, brickColor
+				end
+			end
+			return false, "expected BrickColor name/number or =BrickColor.new(...)"
+		elseif targetType == "table" and trimmed:sub(1, 1) == "{" then
+			if not allowExpressions then
+				return false, "table literal runs on confirm"
+			end
+			local ok, result = parseExpression(trimmed)
+			if ok and type(result) == "table" then
+				return true, result
+			end
+			return false, ok and "expression did not return table" or result
+		elseif targetType == "function" and trimmed:sub(1, 8) == "function" then
+			if not allowExpressions then
+				return false, "function literal runs on confirm"
+			end
+			local ok, result = parseExpression(trimmed)
+			if ok and typeof(result) == "function" then
+				return true, result
+			end
+			return false, ok and "expression did not return function" or result
+		end
+
+		return false, "use =expression to replace this " .. tostring(targetType)
+	end
+
+	local function valueToEditText(value, valueType)
+		if valueType == "string" then
+			return tostring(value or "")
+		elseif valueType == "number" or valueType == "boolean" or valueType == "nil" then
+			return tostring(value)
+		elseif valueType == "Vector3" then
+			return ("%s, %s, %s"):format(value.X, value.Y, value.Z)
+		elseif valueType == "Vector2" then
+			return ("%s, %s"):format(value.X, value.Y)
+		elseif valueType == "Color3" then
+			return ("%d, %d, %d"):format(math.floor(value.R * 255 + 0.5), math.floor(value.G * 255 + 0.5), math.floor(value.B * 255 + 0.5))
+		elseif valueType == "UDim" then
+			return ("%s, %s"):format(value.Scale, value.Offset)
+		elseif valueType == "UDim2" then
+			return ("%s, %s, %s, %s"):format(value.X.Scale, value.X.Offset, value.Y.Scale, value.Y.Offset)
+		elseif valueType == "BrickColor" then
+			return tostring(value)
+		end
+		return ""
+	end
+
+	local function getEditPlaceholder(valueType)
+		if valueType == "table" then
+			return "Use ={ key = value } or edit child keys"
+		elseif valueType == "function" then
+			return "Use =function(...) ... end"
+		elseif valueType == "Instance" then
+			return "Use =game.Workspace.Part"
+		elseif valueType == "string" then
+			return "Text value; use =nil to set nil"
+		end
+		return "Value, nil, or =expression"
+	end
+
+	local function rebuildNodeName(node)
+		local editableType = getEditableType(node)
+		if not editableType then return end
+
+		local suffix = ""
+		if node.ValueType == "table" and type(node.Value) == "table" then
+			suffix = getTableSummary(node.Value)
+		end
+
+		if editableType == "Upvalue" then
+			local label = node.LabelName or ("upval_" .. tostring(node.Index))
+			node.Name = ("[%d] %s%s"):format(node.Index or 0, label, suffix)
+		elseif editableType == "Constant" then
+			node.Name = ("[%d]%s"):format(node.Index or 0, suffix)
+		elseif editableType == "TableValue" then
+			node.Name = safeToString(node.Key, 90) .. ":" .. suffix
+		end
 	end
 
 	local function loadNodeChildren(node)
@@ -253,7 +445,10 @@ local function main()
 						Index = idx,
 						Value = val,
 						ValueType = vType,
-						Func = func
+						Func = func,
+						OwnerFunc = func,
+						EditableType = "Upvalue",
+						LabelName = name
 					}
 					upNode.Path = upvaluesFolder.Path .. "/" .. idx
 					upsList[#upsList + 1] = upNode
@@ -272,7 +467,8 @@ local function main()
 					Depth = depth,
 					Expanded = expandedByPath[node.Path .. "/Constants"] or false,
 					Parent = node,
-					Children = {}
+					Children = {},
+					Func = func
 				}
 				constantsFolder.Path = node.Path .. "/Constants"
 
@@ -291,7 +487,10 @@ local function main()
 						Children = {},
 						Index = idx,
 						Value = val,
-						ValueType = vType
+						ValueType = vType,
+						Func = func,
+						OwnerFunc = func,
+						EditableType = "Constant"
 					}
 					conNode.Path = constantsFolder.Path .. "/" .. idx
 					constsList[#constsList + 1] = conNode
@@ -387,6 +586,7 @@ local function main()
 		elseif node.Type == "Upvalue" or node.Type == "Constant" or node.Type == "TableValue" then
 			-- If it's a function, treat it like a function
 			if node.ValueType == "function" then
+				node.EditableType = node.EditableType or node.Type
 				node.Func = node.Value
 				node.Type = "Function"
 				node.ChildrenLoaded = false
@@ -418,14 +618,17 @@ local function main()
 						tbValText = getTableSummary(v)
 					end
 					local tbVal = {
-						Name = tostring(k) .. ":" .. tbValText,
+						Name = safeToString(k, 90) .. ":" .. tbValText,
 						Type = "TableValue",
 						Depth = depth,
 						Expanded = false,
 						Parent = node,
 						Children = {},
 						Value = v,
-						ValueType = vType
+						ValueType = vType,
+						Key = k,
+						OwnerFunc = node.OwnerFunc or node.Func,
+						EditableType = "TableValue"
 					}
 					tbVal.Path = node.Path .. "/" .. tostring(k)
 					tList[#tList + 1] = tbVal
@@ -690,12 +893,139 @@ local function main()
 		FunctionDumper.Refresh()
 	end
 
+	local function getOwnerFunction(node)
+		local curr = node
+		while curr do
+			if curr.OwnerFunc then
+				return curr.OwnerFunc
+			end
+			if (curr.Type == "Upvalue" or curr.Type == "Constant") and curr.Func then
+				return curr.Func
+			end
+			curr = curr.Parent
+		end
+	end
+
+	local function getTableWriteTarget(node)
+		local pathKeys = {}
+		local curr = node
+		while curr and getEditableType(curr) == "TableValue" do
+			if curr.Key == nil then
+				return nil, nil, "missing table key metadata"
+			end
+			table.insert(pathKeys, 1, curr.Key)
+			curr = curr.Parent
+		end
+
+		if not curr or type(curr.Value) ~= "table" then
+			return nil, nil, "root node is not a table"
+		end
+
+		local targetTbl = curr.Value
+		for i = 1, #pathKeys - 1 do
+			targetTbl = targetTbl[pathKeys[i]]
+			if type(targetTbl) ~= "table" then
+				return nil, nil, "could not trace parent table path"
+			end
+		end
+
+		return targetTbl, pathKeys[#pathKeys]
+	end
+
+	local function syncEditedNode(node, newValue)
+		local editableType = getEditableType(node)
+		node.Value = newValue
+		node.ValueType = typeof(newValue)
+		node.Children = {}
+		node.ChildrenLoaded = false
+		rebuildNodeName(node)
+
+		if editableType then
+			if node.ValueType == "function" then
+				node.EditableType = editableType
+				node.Type = "Function"
+				node.Func = newValue
+			else
+				node.Type = editableType
+				node.Func = node.OwnerFunc
+			end
+		end
+
+		local curr = node.Parent
+		while curr do
+			rebuildNodeName(curr)
+			curr = curr.Parent
+		end
+	end
+
+	FunctionDumper.ApplyNodeEdit = function(node, newValue)
+		local editableType = getEditableType(node)
+		if not editableType then
+			return false, "node is not editable"
+		end
+
+		local success, err
+		if editableType == "Upvalue" then
+			local ownerFunc = getOwnerFunction(node)
+			local setupvalue = (debug and debug.setupvalue) or setupvalue or setupval
+			if ownerFunc and setupvalue then
+				success, err = pcall(setupvalue, ownerFunc, node.Index, newValue)
+			else
+				success, err = false, "debug.setupvalue is not supported by your executor"
+			end
+		elseif editableType == "Constant" then
+			local ownerFunc = getOwnerFunction(node)
+			local setconstant = (debug and debug.setconstant) or setconstant or setconst
+			if ownerFunc and setconstant then
+				success, err = pcall(setconstant, ownerFunc, node.Index, newValue)
+			else
+				success, err = false, "debug.setconstant is not supported by your executor"
+			end
+		elseif editableType == "TableValue" then
+			local targetTbl, key, tableErr = getTableWriteTarget(node)
+			if targetTbl ~= nil and key ~= nil then
+				success, err = pcall(function()
+					targetTbl[key] = newValue
+				end)
+			else
+				success, err = false, tableErr or "could not find table key"
+			end
+		end
+
+		if success then
+			local parent = node.Parent
+			syncEditedNode(node, newValue)
+			if editableType == "TableValue" and newValue == nil and parent then
+				parent.ChildrenLoaded = false
+				parent.Children = {}
+			end
+			selectedNode = node
+			FunctionDumper.Flatten()
+			FunctionDumper.UpdateView()
+			FunctionDumper.Refresh()
+			if statusLabel then
+				statusLabel.Text = ("Edited %s -> <%s> %s"):format(editableType, typeof(newValue), formatValue(newValue, typeof(newValue)))
+			end
+			return true
+		end
+
+		warn("[Axon Dumper] Failed to modify: " .. tostring(err))
+		if statusLabel then
+			statusLabel.Text = "Edit failed: " .. tostring(err)
+		end
+		return false, err
+	end
+
 	FunctionDumper.SetEditingNode = function(node, idx)
 		editingNode = node
 		local entry = listEntries[idx]
 		if not entry then return end
 
-		editBox.Text = tostring(node.Value)
+		editBox.Text = valueToEditText(node.Value, node.ValueType)
+		editBox.PlaceholderText = getEditPlaceholder(node.ValueType)
+		if statusLabel then
+			statusLabel.Text = ("Editing <%s>. Press Enter/check to apply; use =expression for complex values."):format(node.ValueType)
+		end
 		local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
 		local xPos = node.Depth * INDENT + NAME_OFF + nameSize + 8
 
@@ -837,12 +1167,12 @@ local function main()
 		if not selectedNode then return end
 		context:Clear()
 
-		local isEditable = (selectedNode.Type == "Upvalue" or selectedNode.Type == "Constant" or selectedNode.Type == "TableValue") and (selectedNode.ValueType == "number" or selectedNode.ValueType == "boolean" or selectedNode.ValueType == "string" or selectedNode.ValueType == "Vector3" or selectedNode.ValueType == "Color3")
-		if isEditable then
+		if isEditableNode(selectedNode) then
 			local labelName = "Edit Value"
-			if selectedNode.Type == "Upvalue" then labelName = "Edit Upvalue"
-			elseif selectedNode.Type == "Constant" then labelName = "Edit Constant"
-			elseif selectedNode.Type == "TableValue" then labelName = "Edit Table Member"
+			local editableType = getEditableType(selectedNode)
+			if editableType == "Upvalue" then labelName = "Edit Upvalue"
+			elseif editableType == "Constant" then labelName = "Edit Constant"
+			elseif editableType == "TableValue" then labelName = "Edit Table Member"
 			end
 			context:Add({
 				Name = labelName,
@@ -853,6 +1183,14 @@ local function main()
 					if idx then
 						FunctionDumper.SetEditingNode(selectedNode, idx - FunctionDumper.Index)
 					end
+				end
+			})
+			context:Add({
+				Name = "Set nil",
+				IconMap = Main.MiscIcons,
+				Icon = "Delete",
+				OnClick = function()
+					FunctionDumper.ApplyNodeEdit(selectedNode, nil)
 				end
 			})
 		end
@@ -944,8 +1282,7 @@ local function main()
 
 			-- Double click to edit or expand
 			if button == 1 and combo == 2 then
-				local isEditable = (node.Type == "Upvalue" or node.Type == "Constant" or node.Type == "TableValue") and (node.ValueType == "number" or node.ValueType == "boolean" or node.ValueType == "string" or node.ValueType == "Vector3" or node.ValueType == "Color3")
-				if isEditable then
+				if isEditableNode(node) and node.ValueType ~= "table" and node.ValueType ~= "function" then
 					FunctionDumper.SetEditingNode(node, ind)
 				else
 					node.Expanded = not node.Expanded
@@ -1056,65 +1393,50 @@ local function main()
 			end
 		end)
 
+		local function updateEditPreview()
+			if not editingNode or not editBox.Visible then return end
+			local valueType = editingNode.ValueType
+			if isExpressionEdit(editBox.Text, valueType) then
+				editBox.TextColor3 = Settings.Theme.Text
+				if statusLabel then
+					statusLabel.Text = ("Editing <%s>. Expression will run when confirmed."):format(valueType)
+				end
+				return
+			end
+
+			local ok, valueOrErr = parseValue(editBox.Text, valueType, false)
+			if ok then
+				editBox.TextColor3 = Settings.Theme.Text
+				if statusLabel then
+					statusLabel.Text = ("Preview <%s>: %s"):format(typeof(valueOrErr), formatValue(valueOrErr, typeof(valueOrErr)))
+				end
+			else
+				editBox.TextColor3 = Color3.fromRGB(255, 120, 120)
+				if statusLabel then
+					statusLabel.Text = "Edit parse error: " .. tostring(valueOrErr)
+				end
+			end
+		end
+
+		editBox:GetPropertyChangedSignal("Text"):Connect(updateEditPreview)
+
 		editBox.FocusLost:Connect(function(enterPressed)
 			if not editingNode then return end
+			local node = editingNode
 			if enterPressed then
-				local newValue = parseValue(editBox.Text, editingNode.ValueType)
-				if newValue ~= nil then
-					local fNode = editingNode
-					while fNode and fNode.Type ~= "Function" do
-						fNode = fNode.Parent
-					end
-					if fNode and fNode.Func then
-						local success, err
-						if editingNode.Type == "Upvalue" then
-							success, err = pcall(function()
-								debug.setupvalue(fNode.Func, editingNode.Index, newValue)
-							end)
-						elseif editingNode.Type == "Constant" then
-							local setconstant = (debug and debug.setconstant) or setconstant or setconst
-							if setconstant then
-								success, err = pcall(setconstant, fNode.Func, editingNode.Index, newValue)
-							else
-								success, err = false, "debug.setconstant is not supported by your executor"
-							end
-						elseif editingNode.Type == "TableValue" then
-							local pathKeys = {}
-							local curr = editingNode
-							while curr and curr.Type == "TableValue" do
-								table.insert(pathKeys, 1, curr.Key)
-								curr = curr.Parent
-							end
-							if curr and type(curr.Value) == "table" then
-								local targetTbl = curr.Value
-								for i = 1, #pathKeys - 1 do
-									targetTbl = targetTbl[pathKeys[i]]
-									if type(targetTbl) ~= "table" then
-										targetTbl = nil
-										break
-									end
-								end
-								if targetTbl then
-									local lastKey = pathKeys[#pathKeys]
-									targetTbl[lastKey] = newValue
-									success = true
-								else
-									success, err = false, "could not trace parent table path"
-								end
-							else
-								success, err = false, "root node is not a table"
-							end
-						end
-
-						if success then
-							editingNode.Value = newValue
-						else
-							warn("[Axon Dumper] Failed to modify: " .. tostring(err))
-						end
+				local ok, newValueOrErr = parseValue(editBox.Text, node.ValueType, true)
+				if ok then
+					FunctionDumper.ApplyNodeEdit(node, newValueOrErr)
+				else
+					warn("[Axon Dumper] Failed to parse edit: " .. tostring(newValueOrErr))
+					if statusLabel then
+						statusLabel.Text = "Edit parse error: " .. tostring(newValueOrErr)
 					end
 				end
 			end
+			editBox.TextColor3 = Settings.Theme.Text
 			editBox.Visible = false
+			confirmBtn.Visible = false
 			editingNode = nil
 			FunctionDumper.Refresh()
 		end)
