@@ -4106,6 +4106,8 @@ local function main()
 		local tweenService = service.TweenService
 		local lineTweens = {}
 		local fontWidthCache = {}
+		local MAX_FIND_MATCHES = 5000
+		local FIND_SCAN_BUDGET = 0.012
 
 		local function getCodeFontWidth(fontSize)
 			local cached = fontWidthCache[fontSize]
@@ -4575,7 +4577,7 @@ local function main()
 				index = 1
 				self.FindIndex = index
 			end
-			countLabel.Text = count > 0 and (tostring(index) .. "/" .. tostring(count)) or "0/0"
+			countLabel.Text = count > 0 and (tostring(index) .. "/" .. tostring(count) .. (self.FindMatchesCapped and "+" or "")) or "0/0"
 			countLabel.TextColor3 = count > 0 and Settings.Theme.Text or Color3.fromRGB(220, 90, 90)
 		end
 
@@ -4619,6 +4621,9 @@ local function main()
 			self.FindMatches = matches
 			self.FindMatchesByLine = matchesByLine
 			self.FindIndex = 0
+			self.FindMatchesCapped = false
+			self.FindScanToken = (self.FindScanToken or 0) + 1
+			local scanToken = self.FindScanToken
 
 			if query == "" then
 				self:UpdateFindCount()
@@ -4626,13 +4631,13 @@ local function main()
 				return
 			end
 
-			local lowerQuery = query:lower()
 			local queryLen = #query
+			local scanStart = os.clock()
+			local ops = 0
 			for lineIndex, lineText in ipairs(self.Lines) do
-				local lowerLine = lineText:lower()
 				local startPos = 1
 				while true do
-					local foundStart, foundEnd = lowerLine:find(lowerQuery, startPos, true)
+					local foundStart, foundEnd = lineText:find(query, startPos, true)
 					if not foundStart then break end
 					local match = {Line = lineIndex, Start = foundStart, End = foundEnd}
 					matches[#matches + 1] = match
@@ -4642,7 +4647,23 @@ local function main()
 						matchesByLine[lineIndex] = lineMatches
 					end
 					lineMatches[#lineMatches + 1] = match
+					if #matches >= MAX_FIND_MATCHES then
+						self.FindMatchesCapped = true
+						break
+					end
 					startPos = foundStart + math.max(queryLen, 1)
+					ops = ops + 1
+					if ops % 250 == 0 and os.clock() - scanStart > FIND_SCAN_BUDGET then
+						task.wait()
+						if scanToken ~= self.FindScanToken then return end
+						scanStart = os.clock()
+					end
+				end
+				if self.FindMatchesCapped then break end
+				if lineIndex % 500 == 0 and os.clock() - scanStart > FIND_SCAN_BUDGET then
+					task.wait()
+					if scanToken ~= self.FindScanToken then return end
+					scanStart = os.clock()
 				end
 			end
 
@@ -4750,9 +4771,11 @@ local function main()
 			self.FindQuery = ""
 			self.FindMatches = {}
 			self.FindMatchesByLine = {}
+			self.FindMatchesCapped = false
 			self.FindIndex = 0
 			self.FindAnchorLine = nil
 			self.FindAnchorColumn = nil
+			self.FindScanToken = (self.FindScanToken or 0) + 1
 			self:UpdateFindCount()
 			self:Refresh()
 			self:SetEditing(true)
@@ -4784,40 +4807,50 @@ local function main()
 				end
 			})
 
-			local refLines = {}
-			for idx, text in ipairs(self.Lines) do
-				if text:find("%f[%w_]" .. word .. "%f[^%w_]") then
-					refLines[#refLines + 1] = {Line = idx, Text = text}
-				end
-			end
-
-			if not Apps.DecompilerHelper and #refLines > 0 then
-				local refsMenu = Lib.ContextMenu.new()
-				for i = 1, math.min(#refLines, 15) do
-					local item = refLines[i]
-					local cleanText = item.Text:match("^%s*(.-)%s*$")
-					if #cleanText > 40 then
-						cleanText = cleanText:sub(1, 37) .. "..."
-					end
-					refsMenu:Add({
-						Name = ("L%d: %s"):format(item.Line, cleanText),
-						OnClick = function()
-							self:MoveCursor(0, item.Line - 1)
+			if not Apps.DecompilerHelper then
+				local refLines = {}
+				local scanned = 0
+				local maxRefs = 15
+				for idx, text in ipairs(self.Lines) do
+					scanned = scanned + 1
+					if text:find("%f[%w_]" .. word .. "%f[^%w_]") then
+						refLines[#refLines + 1] = {Line = idx, Text = text}
+						if #refLines >= maxRefs then
+							break
 						end
+					end
+					if scanned % 1000 == 0 then
+						task.wait()
+					end
+				end
+				if #refLines > 0 then
+					local refsMenu = Lib.ContextMenu.new()
+					for i = 1, #refLines do
+						local item = refLines[i]
+						local cleanText = item.Text:match("^%s*(.-)%s*$")
+						if #cleanText > 40 then
+							cleanText = cleanText:sub(1, 37) .. "..."
+						end
+						refsMenu:Add({
+							Name = ("L%d: %s"):format(item.Line, cleanText),
+							OnClick = function()
+								self:MoveCursor(0, item.Line - 1)
+							end
+						})
+					end
+					if #refLines >= maxRefs then
+						refsMenu:Add({
+							Name = "... more references available via Find",
+							OnClick = function() end
+						})
+					end
+					context:Add({
+						Name = "Find References (" .. (#refLines >= maxRefs and (tostring(maxRefs) .. "+") or tostring(#refLines)) .. ")",
+						IconMap = Main.MiscIcons,
+						Icon = "Reference",
+						SubMenu = refsMenu
 					})
 				end
-				if #refLines > 15 then
-					refsMenu:Add({
-						Name = ("... and %d more references"):format(#refLines - 15),
-						OnClick = function() end
-					})
-				end
-				context:Add({
-					Name = "Find References (" .. #refLines .. ")",
-					IconMap = Main.MiscIcons,
-					Icon = "Reference",
-					SubMenu = refsMenu
-				})
 			end
 
 			local isBuiltIn = builtIns[word] ~= nil
@@ -4855,6 +4888,9 @@ local function main()
 											break
 										end
 									end
+								end
+								if i % 500 == 0 then
+									task.wait()
 								end
 							end
 
@@ -5891,7 +5927,9 @@ local function main()
 				FindQuery = "",
 				FindMatches = {},
 				FindMatchesByLine = {},
+				FindMatchesCapped = false,
 				FindIndex = 0,
+				FindScanToken = 0,
 				FindAnchorLine = nil,
 				FindAnchorColumn = nil,
 				SelectionRange = {{-1,-1},{-1,-1}},
