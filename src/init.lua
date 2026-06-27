@@ -220,6 +220,7 @@ Main = (function()
 	Main.GitName = Axon.Owner or "PolarisHub"
 	Main.RepoName = Axon.Repo or "axon-dex"
 	Main.GitRepoName = Main.GitName.."/"..Main.RepoName
+	Main.DependencyFetches = {}
 
 	Main.DisplayOrders = {
 		SideWindow = 8,
@@ -237,6 +238,43 @@ Main = (function()
 		end
 
 		return output
+	end
+
+	do
+		local crcTable
+		local bit = bit32
+
+		local function initCRCTable()
+			if crcTable then return crcTable end
+			local bxor, band, rshift = bit.bxor, bit.band, bit.rshift
+			crcTable = {}
+			for byte = 0, 255 do
+				local crc = byte
+				for _ = 1, 8 do
+					if band(crc, 1) ~= 0 then
+						crc = bxor(0xEDB88320, rshift(crc, 1))
+					else
+						crc = rshift(crc, 1)
+					end
+				end
+				crcTable[byte] = crc
+			end
+			return crcTable
+		end
+
+		Main.HashText32 = function(text)
+			if type(text) ~= "string" then return nil end
+			if not bit then return tostring(#text) end
+
+			local bxor, band, rshift = bit.bxor, bit.band, bit.rshift
+			local lookup = initCRCTable()
+			local crc = 0xFFFFFFFF
+			for i = 1, #text do
+				local byte = text:byte(i)
+				crc = bxor(rshift(crc, 8), lookup[band(bxor(crc, byte), 0xFF)])
+			end
+			return ("%08x"):format(bxor(crc, 0xFFFFFFFF))
+		end
 	end
 
 	Main.GetSecureContainer = function()
@@ -712,26 +750,20 @@ Main = (function()
 		local downloaded = false
 		local api,rawAPI
 		if Main.Elevated then
-			if Main.LocalDepsUpToDate() then
-				local localAPI = Lib.ReadFile("axon/rbx_api.dat")
-				if localAPI then
-					rawAPI = localAPI
-				else
-					Main.DepsVersionData[1] = ""
-				end
+			rawAPI = Main.PrefetchedLocalDeps and Main.PrefetchedLocalDeps.API or Main.ReadCachedDependency("axon/rbx_api.dat", 3, "API")
+			if not rawAPI then
+				task.spawn(function()
+					task.wait(10)
+					if not downloaded and callbackiflong then callbackiflong() end
+
+					task.wait(20) -- 30
+					if not downloaded and callbackiftoolong then callbackiftoolong() end
+
+					task.wait(30) -- 60
+					if not downloaded and XD then XD() end
+				end)
+				rawAPI = Main.WaitDependencyFetch("API", "http://setup.roblox.com/"..Main.RobloxVersion.."-API-Dump.json")
 			end
-			task.spawn(function()
-				task.wait(10)
-				if not downloaded and callbackiflong then callbackiflong() end
-
-				task.wait(20) -- 30
-				if not downloaded and callbackiftoolong then callbackiftoolong() end
-
-				task.wait(30) -- 60
-				if not downloaded and XD then XD() end
-			end)
-			-- async makes it work to load big file
-			rawAPI = rawAPI or game:HttpGet("http://setup.roblox.com/"..Main.RobloxVersion.."-API-Dump.json")
 		else
 			if script:FindFirstChild("API") then
 				rawAPI = require(script.API)
@@ -932,15 +964,8 @@ Main = (function()
 	Main.FetchRMD = function()
 		local rawXML
 		if Main.Elevated then
-			if Main.LocalDepsUpToDate() then
-				local localRMD = Lib.ReadFile("axon/rbx_rmd.dat")
-				if localRMD then
-					rawXML = localRMD
-				else
-					Main.DepsVersionData[1] = ""
-				end
-			end
-			rawXML = rawXML or game:HttpGet("https://raw.githubusercontent.com/CloneTrooper1019/Roblox-Client-Tracker/roblox/ReflectionMetadata.xml")
+			rawXML = Main.PrefetchedLocalDeps and Main.PrefetchedLocalDeps.RMD or Main.ReadCachedDependency("axon/rbx_rmd.dat", 4, "RMD")
+			rawXML = rawXML or Main.WaitDependencyFetch("RMD", "https://raw.githubusercontent.com/CloneTrooper1019/Roblox-Client-Tracker/roblox/ReflectionMetadata.xml")
 		else
 			if script:FindFirstChild("RMD") then
 				rawXML = require(script.RMD)
@@ -1508,6 +1533,104 @@ Main = (function()
 		return Main.DepsVersionData and Main.ClientVersion == Main.DepsVersionData[1]
 	end
 
+	Main.LocalDepsNeedHashRefresh = function()
+		return Main.LocalDepsUpToDate() and (not Main.DepsVersionData[3] or not Main.DepsVersionData[4])
+	end
+
+	Main.ReadCachedDependency = function(path, hashIndex, label)
+		if not Main.LocalDepsUpToDate() then return nil end
+
+		local data = Lib.ReadFile(path)
+		if not data then
+			Main.DepsVersionData[1] = ""
+			return nil
+		end
+
+		local expectedHash = Main.DepsVersionData[hashIndex]
+		if expectedHash and expectedHash ~= "" then
+			local actualHash = Main.HashText32(data)
+			if actualHash ~= expectedHash then
+				warn(("[Axon] Ignoring stale/corrupt cached %s (%s ~= %s)."):format(label or path, tostring(actualHash), tostring(expectedHash)))
+				Main.DepsVersionData[1] = ""
+				return nil
+			end
+		end
+
+		return data
+	end
+
+	Main.QueueDependencyFetch = function(key, url)
+		local fetches = Main.DependencyFetches
+		local state = fetches[key]
+		if state then return state end
+
+		state = {
+			Done = false,
+			Ok = false,
+			Result = nil,
+			Url = url
+		}
+		fetches[key] = state
+
+		task.spawn(function()
+			local ok, result = pcall(function()
+				if env.request then
+					local response = env.request({
+						Url = url,
+						Method = "GET"
+					})
+					if response and response.Body then
+						local status = tonumber(response.StatusCode or response.status_code or response.Status)
+						if status and (status < 200 or status >= 300) then
+							error(("HTTP %d"):format(status))
+						end
+						return response.Body
+					end
+				end
+				return game:HttpGet(url)
+			end)
+			state.Ok = ok and type(result) == "string" and #result > 0
+			state.Result = result
+			state.Done = true
+			if state.Ok then
+				devlog(("dependency fetched: %s (%d bytes, crc32=%s)"):format(key, #result, Main.HashText32(result)))
+			else
+				warn(("[Axon] Failed fetching dependency %s: %s"):format(key, tostring(result)))
+			end
+		end)
+
+		return state
+	end
+
+	Main.WaitDependencyFetch = function(key, url)
+		local state = Main.QueueDependencyFetch(key, url)
+		while not state.Done do
+			task.wait()
+		end
+		if state.Ok then
+			return state.Result
+		end
+		error(("Failed to fetch %s from %s: %s"):format(key, url, tostring(state.Result)), 0)
+	end
+
+	Main.BeginDependencyFetches = function()
+		if not Main.Elevated then return end
+
+		local cachedAPI = Main.ReadCachedDependency("axon/rbx_api.dat", 3, "API")
+		local cachedRMD = Main.ReadCachedDependency("axon/rbx_rmd.dat", 4, "RMD")
+		Main.PrefetchedLocalDeps = {
+			API = cachedAPI,
+			RMD = cachedRMD
+		}
+
+		if not cachedAPI then
+			Main.QueueDependencyFetch("API", "http://setup.roblox.com/"..Main.RobloxVersion.."-API-Dump.json")
+		end
+		if not cachedRMD then
+			Main.QueueDependencyFetch("RMD", "https://raw.githubusercontent.com/CloneTrooper1019/Roblox-Client-Tracker/roblox/ReflectionMetadata.xml")
+		end
+	end
+
 	Main.Init = function()
 		Main.Elevated = pcall(function() local a = game:GetService("CoreGui"):GetFullName() end)
 
@@ -1559,6 +1682,7 @@ Main = (function()
 			end
 
 			Main.RobloxVersion = Main.RobloxVersion or oldgame:HttpGet("https://clientsettings.roblox.com/v2/client-version/WindowsStudio64/channel/LIVE"):match("(version%-[%w]+)")
+			Main.BeginDependencyFetches()
 		end
 
 		-- Fetch external deps
@@ -1580,9 +1704,11 @@ Main = (function()
 		task.wait()
 
 		-- Save external deps locally if needed (non-blocking, fire-and-forget)
-		if Main.Elevated and env.writefile and not Main.LocalDepsUpToDate() then
+		if Main.Elevated and env.writefile and (not Main.LocalDepsUpToDate() or Main.LocalDepsNeedHashRefresh()) then
 			task.spawn(function()
-				env.writefile("axon/deps_version.dat",Main.ClientVersion.."\n"..Main.RobloxVersion)
+				local apiHash = Main.HashText32(Main.RawAPI or "")
+				local rmdHash = Main.HashText32(Main.RawRMD or "")
+				env.writefile("axon/deps_version.dat",Main.ClientVersion.."\n"..Main.RobloxVersion.."\n"..apiHash.."\n"..rmdHash)
 				task.wait()
 				env.writefile("axon/rbx_api.dat",Main.RawAPI)
 				task.wait()

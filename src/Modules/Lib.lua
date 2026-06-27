@@ -726,6 +726,20 @@ local function main()
 	Lib.IconMap = (function()
 		local funcs = {}
 		local IconList = {}
+		local bit = bit32
+		local band, rshift = bit and bit.band, bit and bit.rshift
+
+		local function getPowerOfTwoShift(value)
+			if not band or value < 1 or value % 1 ~= 0 then return nil end
+			local shift = 0
+			local current = value
+			while current > 1 do
+				if current % 2 ~= 0 then return nil end
+				current = current / 2
+				shift = shift + 1
+			end
+			return shift
+		end
 
 		IconList.Old = {
 			MapId = 483448923,
@@ -1924,6 +1938,8 @@ local function main()
 			obj.ImageRectSize = Vector2.new(self.IconSizeX, self.IconSizeY)
 			if not self.NumX then
 				obj.ImageRectOffset = Vector2.new(self.IconSizeX*index, 0)
+			elseif self.NumXMask then
+				obj.ImageRectOffset = Vector2.new(self.IconSizeX*band(index, self.NumXMask), self.IconSizeY*rshift(index, self.NumXShift))
 			else
 				obj.ImageRectOffset = Vector2.new(self.IconSizeX*(index % self.NumX), self.IconSizeY*math.floor(index / self.NumX))
 			end
@@ -1999,13 +2015,17 @@ local function main()
 		mt.__index = funcs
 
 		local function new(mapId,mapSizeX,mapSizeY,iconSizeX,iconSizeY)
+			local numX = mapSizeX/iconSizeX
+			local numXShift = getPowerOfTwoShift(numX)
 			local obj = setmetatable({
 				MapId = mapId,
 				MapSizeX = mapSizeX,
 				MapSizeY = mapSizeY,
 				IconSizeX = iconSizeX,
 				IconSizeY = iconSizeY,
-				NumX = mapSizeX/iconSizeX,
+				NumX = numX,
+				NumXShift = numXShift,
+				NumXMask = numXShift and (numX - 1) or nil,
 				IndexDict = {}
 			}, mt)
 			return obj

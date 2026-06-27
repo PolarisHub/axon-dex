@@ -963,6 +963,8 @@ local function main()
 	-- Tab 4: Bytecode Disassembler Logic
 	-- A highly optimized, compact varint reader & Luau instruction decoder
 	local function disassemble(bytecode)
+		local bit = bit32
+		local band, bor, lshift, extract = bit.band, bit.bor, bit.lshift, bit.extract
 		local lines = {}
 		local stream = {str = bytecode, pos = 1}
 		function stream:readByte()
@@ -975,15 +977,17 @@ local function main()
 			local shift = 0
 			while true do
 				local b = self:readByte()
-				result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
-				if bit32.band(b, 0x80) == 0 then break end
+				result = bor(result, lshift(band(b, 0x7F), shift))
+				if band(b, 0x80) == 0 then break end
 				shift = shift + 7
 			end
 			return result
 		end
 		function stream:readInt32()
-			local b1, b2, b3, b4 = self:readByte(), self:readByte(), self:readByte(), self:readByte()
-			return b1 + b2*256 + b3*65536 + b4*16777216
+			local pos = self.pos
+			local b1, b2, b3, b4 = self.str:byte(pos, pos + 3)
+			self.pos = pos + 4
+			return bor(b1 or 0, lshift(b2 or 0, 8), lshift(b3 or 0, 16), lshift(b4 or 0, 24))
 		end
 
 		local version = stream:readByte()
@@ -1069,23 +1073,23 @@ local function main()
 			local pc = 0
 			while pc < sizecode do
 				local inst = code[pc + 1]
-				local op = bit32.band(inst, 0xFF)
-				local a = bit32.band(bit32.rshift(inst, 8), 0xFF)
-				local b = bit32.band(bit32.rshift(inst, 16), 0xFF)
-				local c = bit32.band(bit32.rshift(inst, 24), 0xFF)
+				local op = extract(inst, 0, 8)
+				local a = extract(inst, 8, 8)
+				local b = extract(inst, 16, 8)
+				local c = extract(inst, 24, 8)
 				local opName = OP_NAMES[op] or ("OP_0x%02X"):format(op)
 
 				local disassembly = ("  [%04d]  %-14s  R%d, R%d, R%d"):format(pc, opName, a, b, c)
 
 				-- Resolve constants & imports to make instructions readable
 				if opName == "LOADK" or opName == "GETGLOBAL" or opName == "SETGLOBAL" then
-					local bx = bit32.band(bit32.rshift(inst, 16), 0xFFFF)
+					local bx = extract(inst, 16, 16)
 					local kVal = constants[bx + 1] or ""
 					disassembly = disassembly .. ("  ; K[%d] (%s)"):format(bx, tostring(kVal))
 				elseif opName == "GETIMPORT" then
 					disassembly = disassembly .. "  ; IMPORT"
 				elseif opName == "NEWCLOSURE" then
-					local bx = bit32.band(bit32.rshift(inst, 16), 0xFFFF)
+					local bx = extract(inst, 16, 16)
 					disassembly = disassembly .. ("  ; Proto #%d"):format(bx)
 				end
 
