@@ -4105,9 +4105,15 @@ local function main()
 
 		local tweenService = service.TweenService
 		local lineTweens = {}
+		local fontWidthCache = {}
 
 		local function getCodeFontWidth(fontSize)
-			return service.TextService:GetTextSize("M", fontSize, Enum.Font.Code, Vector2.new(1000, 1000)).X
+			local cached = fontWidthCache[fontSize]
+			if cached then return cached end
+
+			cached = service.TextService:GetTextSize("M", fontSize, Enum.Font.Code, Vector2.new(1000, 1000)).X
+			fontWidthCache[fontSize] = cached
+			return cached
 		end
 
 		local function initBuiltIn()
@@ -5614,29 +5620,39 @@ local function main()
 				local resText = ""
 				local highlights = self:HighlightLine(relaY)
 				local colStart = viewX + 1
-				local fontSizeX = getCodeFontWidth(self.FontSize)
-
-				for _, child in ipairs(lineFrame.SearchHighlights:GetChildren()) do
-					child:Destroy()
+				local rowSearchHighlights = self.SearchHighlightFrames[row]
+				if not rowSearchHighlights then
+					rowSearchHighlights = {}
+					self.SearchHighlightFrames[row] = rowSearchHighlights
 				end
 
 				local lineMatches = self.FindMatchesByLine and self.FindMatchesByLine[relaY]
+				local searchHighlightCount = 0
 				if lineMatches then
 					for _, match in ipairs(lineMatches) do
 						local visibleStart = math.max(match.Start - 1, viewX)
 						local visibleEnd = math.min(match.End, viewX + maxCols)
 						if visibleEnd > visibleStart then
-							local matchHighlight = Instance.new("Frame")
-							matchHighlight.Name = "SearchHighlight"
-							matchHighlight.BorderSizePixel = 0
+							searchHighlightCount = searchHighlightCount + 1
+							local matchHighlight = rowSearchHighlights[searchHighlightCount]
+							if not matchHighlight then
+								matchHighlight = Instance.new("Frame")
+								matchHighlight.Name = "SearchHighlight"
+								matchHighlight.BorderSizePixel = 0
+								matchHighlight.ZIndex = 1
+								matchHighlight.Parent = lineFrame.SearchHighlights
+								rowSearchHighlights[searchHighlightCount] = matchHighlight
+							end
 							matchHighlight.BackgroundColor3 = Settings.Theme.Highlight
 							matchHighlight.BackgroundTransparency = (self.FindMatches and self.FindMatches[self.FindIndex] == match) and 0.25 or 0.65
 							matchHighlight.Position = UDim2.new(0, (visibleStart - viewX) * fontSizeX, 0, 1)
 							matchHighlight.Size = UDim2.new(0, (visibleEnd - visibleStart) * fontSizeX, 1, -2)
-							matchHighlight.ZIndex = 1
-							matchHighlight.Parent = lineFrame.SearchHighlights
+							matchHighlight.Visible = true
 						end
 					end
+				end
+				for i = searchHighlightCount + 1, #rowSearchHighlights do
+					rowSearchHighlights[i].Visible = false
 				end
 
 				local richTemplates = self.RichTemplates
@@ -5708,15 +5724,20 @@ local function main()
 					--lineNumberStr = lineNumberStr .. (relaY == self.CursorY and (relaY.."\n") or relaY .. "\n")
 				end
 
-				lineFrame.Label.Text = resText
+				if lineFrame.Label.Text ~= resText then
+					lineFrame.Label.Text = resText
+				end
 			end
 
 			for i = maxLines+1,#self.LineFrames do
 				self.LineFrames[i]:Destroy()
 				self.LineFrames[i] = nil
+				self.SearchHighlightFrames[i] = nil
 			end
 
-			self.Frame.LineNumbers.Text = lineNumberStr
+			if self.Frame.LineNumbers.Text ~= lineNumberStr then
+				self.Frame.LineNumbers.Text = lineNumberStr
+			end
 			self:UpdateCursor()
 
 			--print("REFRESH TIME",tick()-start)
@@ -5859,6 +5880,7 @@ local function main()
 				ColoredLines = {},
 				Lines = {""},
 				LineFrames = {},
+				SearchHighlightFrames = {},
 				Editable = true,
 				Editing = false,
 				CursorX = 0,
