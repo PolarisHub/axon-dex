@@ -598,20 +598,13 @@ local function main()
 		-- Format Buffer
 		local buffer = {}
 		local indentLevel = 0
-		local lineHasContent = false
 
 		local function write(str)
 			buffer[#buffer + 1] = str
-			lineHasContent = true
-		end
-
-		local function writeIndent()
-			write(baseIndentStr .. string.rep(OPT_INDENT_CHAR, indentLevel))
 		end
 
 		local function writeNewline()
 			write("\n")
-			lineHasContent = false
 		end
 
 		-- Parse tokens into statements for block structures
@@ -667,6 +660,215 @@ local function main()
 			["end"] = true, ["until"] = true, ["else"] = true, ["elseif"] = true
 		}
 
+		-- Helper function to format a single statement line with optional split layouts
+		local function formatStatement(stmt, currentIndentLevel)
+			local firstTok = stmt[1]
+
+			local function getSpaceBetween(prevTok, tok, nextTok)
+				if not prevTok then return "" end
+
+				if tok.Value == "." or tok.Value == ":" or prevTok.Value == "." or prevTok.Value == ":" then
+					return ""
+				end
+				if tok.Value == "[" or prevTok.Value == "[" then
+					return ""
+				end
+				if tok.Value == "]" or prevTok.Value == "]" then
+					return ""
+				end
+				if tok.Value == "(" then
+					if prevTok.Type == "Identifier" or prevTok.Value == ")" or prevTok.Value == "]" then
+						return ""
+					else
+						return " "
+					end
+				end
+				if tok.Value == ")" or prevTok.Value == "(" then
+					return ""
+				end
+				if tok.Value == "," or tok.Value == ";" then
+					return ""
+				end
+				if prevTok.Value == "," or prevTok.Value == ";" then
+					return " "
+				end
+				if isUnaryOp(tok, prevTok) then
+					return " "
+				end
+				if BINARY_OPS[tok.Value] or BINARY_OPS[prevTok.Value] then
+					if OPT_SPACE_AROUND_OPS then
+						return " "
+					end
+				end
+				if prevTok.Type == "Keyword" or tok.Type == "Keyword" then
+					return " "
+				end
+
+				return ""
+			end
+
+			-- Try to format as single line
+			local singleLineBuffer = {}
+			local stmtBraceDepth = 0
+
+			for tIdx = 1, #stmt do
+				local tok = stmt[tIdx]
+				local prevTok = stmt[tIdx - 1]
+				local nextTok = stmt[tIdx + 1]
+
+				if tok.Value == "{" then
+					stmtBraceDepth = stmtBraceDepth + 1
+					singleLineBuffer[#singleLineBuffer + 1] = "{"
+					
+					local isComplexTable = false
+					local checkIdx = tIdx + 1
+					local nestedCount = 0
+					while checkIdx <= #stmt do
+						local checkTok = stmt[checkIdx]
+						if checkTok.Value == "}" then break end
+						if checkTok.Value == "{" or checkTok.Value == "," then
+							nestedCount = nestedCount + 1
+						end
+						checkIdx = checkIdx + 1
+					end
+					if nestedCount > 3 then
+						isComplexTable = true
+					end
+
+					if isComplexTable then
+						singleLineBuffer[#singleLineBuffer + 1] = "\n"
+					end
+				elseif tok.Value == "}" then
+					stmtBraceDepth = math.max(0, stmtBraceDepth - 1)
+					singleLineBuffer[#singleLineBuffer + 1] = "}"
+				elseif tok.Value == "," then
+					singleLineBuffer[#singleLineBuffer + 1] = ","
+					if OPT_SPACE_AFTER_COMMA and nextTok and nextTok.Value ~= "}" then
+						singleLineBuffer[#singleLineBuffer + 1] = " "
+					end
+				elseif tok.Value == ";" then
+					if not OPT_REMOVE_SEMICOLONS then
+						singleLineBuffer[#singleLineBuffer + 1] = ";"
+						if nextTok then singleLineBuffer[#singleLineBuffer + 1] = " " end
+					end
+				else
+					local spacing = getSpaceBetween(prevTok, tok, nextTok)
+					singleLineBuffer[#singleLineBuffer + 1] = spacing
+					singleLineBuffer[#singleLineBuffer + 1] = tok.Value
+				end
+			end
+
+			local singleLineText = table.concat(singleLineBuffer, "")
+
+			-- Check line length constraints
+			if #singleLineText <= OPT_MAX_LINE_LENGTH and not singleLineText:find("\n") then
+				return baseIndentStr .. string.rep(OPT_INDENT_CHAR, currentIndentLevel) .. singleLineText .. "\n"
+			end
+
+			-- Line splitting required
+			local commaIndices = {}
+			local operatorIndices = {}
+			local memberIndices = {}
+			local pDepth, bDepth, brDepth = 0, 0, 0
+
+			for tIdx = 1, #stmt do
+				local tok = stmt[tIdx]
+				if tok.Value == "(" then pDepth = pDepth + 1
+				elseif tok.Value == ")" then pDepth = math.max(0, pDepth - 1)
+				elseif tok.Value == "{" then bDepth = bDepth + 1
+				elseif tok.Value == "}" then bDepth = math.max(0, bDepth - 1)
+				elseif tok.Value == "[" then brDepth = brDepth + 1
+				elseif tok.Value == "]" then brDepth = math.max(0, brDepth - 1)
+				end
+
+				if tok.Value == "," then
+					if pDepth == 1 or bDepth == 1 then
+						commaIndices[#commaIndices + 1] = tIdx
+					end
+				elseif tok.Value == "and" or tok.Value == "or" or tok.Value == ".." or tok.Value == "+" or tok.Value == "-" then
+					if pDepth == 0 and bDepth == 0 then
+						operatorIndices[#operatorIndices + 1] = tIdx
+					end
+				elseif tok.Value == ":" or tok.Value == "." then
+					if pDepth == 0 and bDepth == 0 then
+						memberIndices[#memberIndices + 1] = tIdx
+					end
+				end
+			end
+
+			local chosenSplits = {}
+			if #commaIndices > 0 then
+				for _, idx in ipairs(commaIndices) do chosenSplits[idx] = "comma" end
+			elseif #operatorIndices > 0 then
+				for _, idx in ipairs(operatorIndices) do chosenSplits[idx - 1] = "operator" end
+			elseif #memberIndices > 0 then
+				for _, idx in ipairs(memberIndices) do chosenSplits[idx - 1] = "member" end
+			end
+
+			-- Reconstruct split output
+			local splitBuffer = {}
+			local currentIndent = baseIndentStr .. string.rep(OPT_INDENT_CHAR, currentIndentLevel)
+			splitBuffer[#splitBuffer + 1] = currentIndent
+
+			local extraIndentLevel = 1
+			pDepth = 0
+			bDepth = 0
+
+			for tIdx = 1, #stmt do
+				local tok = stmt[tIdx]
+				local prevTok = stmt[tIdx - 1]
+				local nextTok = stmt[tIdx + 1]
+
+				if tok.Value == "(" then pDepth = pDepth + 1
+				elseif tok.Value == ")" then pDepth = math.max(0, pDepth - 1)
+				elseif tok.Value == "{" then bDepth = bDepth + 1
+				elseif tok.Value == "}" then bDepth = math.max(0, bDepth - 1)
+				end
+
+				if tok.Value == "{" then
+					splitBuffer[#splitBuffer + 1] = "{"
+					if bDepth > 0 then
+						extraIndentLevel = extraIndentLevel + 1
+						splitBuffer[#splitBuffer + 1] = "\n"
+						splitBuffer[#splitBuffer + 1] = baseIndentStr .. string.rep(OPT_INDENT_CHAR, currentIndentLevel + extraIndentLevel)
+					end
+				elseif tok.Value == "}" then
+					if bDepth > 0 then
+						extraIndentLevel = math.max(0, extraIndentLevel - 1)
+						splitBuffer[#splitBuffer + 1] = "\n"
+						splitBuffer[#splitBuffer + 1] = baseIndentStr .. string.rep(OPT_INDENT_CHAR, currentIndentLevel + extraIndentLevel)
+					end
+					splitBuffer[#splitBuffer + 1] = "}"
+				elseif tok.Value == "," then
+					splitBuffer[#splitBuffer + 1] = ","
+					if nextTok and nextTok.Value ~= "}" then
+						if bDepth > 0 or pDepth > 0 then
+							splitBuffer[#splitBuffer + 1] = "\n"
+							splitBuffer[#splitBuffer + 1] = baseIndentStr .. string.rep(OPT_INDENT_CHAR, currentIndentLevel + extraIndentLevel)
+						else
+							splitBuffer[#splitBuffer + 1] = " "
+						end
+					end
+				elseif tok.Value == ";" then
+					if not OPT_REMOVE_SEMICOLONS then
+						splitBuffer[#splitBuffer + 1] = ";"
+					end
+				else
+					local spacing = getSpaceBetween(prevTok, tok, nextTok)
+					splitBuffer[#splitBuffer + 1] = spacing
+					splitBuffer[#splitBuffer + 1] = tok.Value
+				end
+
+				if chosenSplits[tIdx] and bDepth == 0 and pDepth == 0 then
+					splitBuffer[#splitBuffer + 1] = "\n"
+					splitBuffer[#splitBuffer + 1] = baseIndentStr .. string.rep(OPT_INDENT_CHAR, currentIndentLevel + 1)
+				end
+			end
+
+			splitBuffer[#splitBuffer + 1] = "\n"
+			return table.concat(splitBuffer, "")
+		end
+
 		-- Main formatting loop over statements
 		local consecutiveBlanks = 0
 
@@ -695,103 +897,8 @@ local function main()
 			end
 
 			-- Write Statement line
-			writeIndent()
-
-			-- Inner token loop for spacing rules
-			local stmtBraceDepth = 0
-			local stmtParenDepth = 0
-
-			for tIdx = 1, #stmt do
-				local tok = stmt[tIdx]
-				local prevTok = stmt[tIdx - 1]
-				local nextTok = stmt[tIdx + 1]
-
-				-- Handle nested multi-line tables
-				if tok.Value == "{" then
-					stmtBraceDepth = stmtBraceDepth + 1
-					write("{")
-					local isComplexTable = false
-					local checkIdx = tIdx + 1
-					local nestedCount = 0
-					while checkIdx <= #stmt do
-						local checkTok = stmt[checkIdx]
-						if checkTok.Value == "}" then break end
-						if checkTok.Value == "{" or checkTok.Value == "," then
-							nestedCount = nestedCount + 1
-						end
-						checkIdx = checkIdx + 1
-					end
-					if nestedCount > 3 or string.len(rebuildSource(stmt)) > OPT_MAX_LINE_LENGTH then
-						isComplexTable = true
-					end
-
-					if isComplexTable then
-						indentLevel = indentLevel + 1
-						writeNewline()
-						writeIndent()
-					end
-				elseif tok.Value == "}" then
-					stmtBraceDepth = math.max(0, stmtBraceDepth - 1)
-					if prevTok and prevTok.Value ~= "{" then
-						if indentLevel > 0 and prevTok.Value == "," or prevTok.Value == ";" then
-							indentLevel = math.max(0, indentLevel - 1)
-							writeNewline()
-							writeIndent()
-						end
-					end
-					write("}")
-				elseif tok.Value == "," then
-					write(",")
-					if OPT_SPACE_AFTER_COMMA and nextTok and nextTok.Value ~= "}" then
-						write(" ")
-					end
-				elseif tok.Value == ";" then
-					write(";")
-					if nextTok then write(" ") end
-				else
-					-- Standard spacing evaluation
-					if prevTok and prevTok.Value ~= "{" and prevTok.Value ~= "," and prevTok.Value ~= ";" then
-						local spacing = ""
-
-						-- Dot/Colon accessors
-						if tok.Value == "." or tok.Value == ":" or prevTok.Value == "." or prevTok.Value == ":" then
-							spacing = ""
-						-- Index access bracket spacing
-						elseif tok.Value == "[" or prevTok.Value == "[" then
-							spacing = ""
-						elseif tok.Value == "]" or prevTok.Value == "]" then
-							spacing = ""
-						-- Function call spacing
-						elseif tok.Value == "(" then
-							if prevTok.Type == "Identifier" or prevTok.Value == ")" or prevTok.Value == "]" then
-								spacing = ""
-							else
-								spacing = " "
-							end
-						-- Parentheses padding
-						elseif tok.Value == ")" or prevTok.Value == "(" then
-							spacing = ""
-						-- Unary sign context
-						elseif isUnaryOp(tok, prevTok) then
-							spacing = " "
-						-- Binary operators spacing
-						elseif BINARY_OPS[tok.Value] or BINARY_OPS[prevTok.Value] then
-							if OPT_SPACE_AROUND_OPS then
-								spacing = " "
-							end
-						-- Keyword boundaries
-						elseif prevTok.Type == "Keyword" or tok.Type == "Keyword" then
-							spacing = " "
-						end
-
-						write(spacing)
-					end
-
-					write(tok.Value)
-				end
-			end
-
-			writeNewline()
+			local formattedLine = formatStatement(stmt, indentLevel)
+			write(formattedLine)
 
 			-- Calculate trailing indentation shifts (openers increase indent)
 			local stmtNetIndent = 0
