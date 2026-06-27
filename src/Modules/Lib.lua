@@ -4502,6 +4502,22 @@ local function main()
 
 			if Apps.DecompilerHelper then
 				context:Add({
+					Name = "Format Code",
+					IconMap = Main.MiscIcons,
+					Icon = "ViewScript",
+					OnClick = function()
+						Apps.DecompilerHelper.BeautifyCode(self)
+					end
+				})
+				context:Add({
+					Name = "Format Function '" .. word .. "'",
+					IconMap = Main.MiscIcons,
+					Icon = "ViewScript",
+					OnClick = function()
+						Apps.DecompilerHelper.BeautifyFunction(word, self)
+					end
+				})
+				context:Add({
 					Name = "Find References (XREFs)",
 					IconMap = Main.MiscIcons,
 					Icon = "Reference",

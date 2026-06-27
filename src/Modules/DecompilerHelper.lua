@@ -472,6 +472,426 @@ local function main()
 	end
 
 	-------------------------------------------------------------
+	-- SECTION 2.5: LEXICAL LUA CODE BEAUTIFIER ENGINE (~600 lines)
+	-------------------------------------------------------------
+	local function findFunctionTokenBounds(funcName, tokens)
+		local startTokenIdx = nil
+		for i = 1, #tokens do
+			local t = tokens[i]
+			if t.Type == "Keyword" and t.Value == "function" then
+				local nextIdx = i + 1
+				while nextIdx <= #tokens and tokens[nextIdx].Type == "Whitespace" do
+					nextIdx = nextIdx + 1
+				end
+				if nextIdx <= #tokens and tokens[nextIdx].Value == funcName then
+					startTokenIdx = i
+					break
+				end
+			elseif t.Type == "Identifier" and t.Value == funcName then
+				local nextIdx = i + 1
+				while nextIdx <= #tokens and tokens[nextIdx].Type == "Whitespace" do
+					nextIdx = nextIdx + 1
+				end
+				if nextIdx <= #tokens and tokens[nextIdx].Value == "=" then
+					local funcIdx = nextIdx + 1
+					while funcIdx <= #tokens and tokens[funcIdx].Type == "Whitespace" do
+						funcIdx = funcIdx + 1
+					end
+					if funcIdx <= #tokens and tokens[funcIdx].Type == "Keyword" and tokens[funcIdx].Value == "function" then
+						startTokenIdx = funcIdx
+						break
+					end
+				end
+			end
+		end
+
+		if not startTokenIdx then return nil, nil end
+
+		local depth = 1
+		local endTokenIdx = nil
+		local blockOpeners = {
+			["if"] = true, ["while"] = true, ["for"] = true, ["do"] = true, ["function"] = true
+		}
+
+		for idx = startTokenIdx + 1, #tokens do
+			local t = tokens[idx]
+			if t.Type == "Keyword" then
+				if blockOpeners[t.Value] then
+					depth = depth + 1
+				elseif t.Value == "end" then
+					depth = depth - 1
+					if depth == 0 then
+						endTokenIdx = idx
+						break
+					end
+				end
+			end
+		end
+
+		return startTokenIdx, endTokenIdx
+	end
+
+	local function beautifyTokens(subTokens, baseIndentStr)
+		-- Formatting Configuration Options
+		local OPT_INDENT_CHAR = "    " -- 4 spaces
+		local OPT_SPACE_AROUND_OPS = true
+		local OPT_SPACE_AFTER_COMMA = true
+		local OPT_REMOVE_SEMICOLONS = true
+		local OPT_MAX_LINE_LENGTH = 100
+		local OPT_MAX_CONSECUTIVE_BLANKS = 1
+
+		-- Token Stream Helper Class
+		local Stream = {}
+		Stream.__index = Stream
+		function Stream.new(tList)
+			local self = setmetatable({}, Stream)
+			self.Tokens = {}
+			for i = 1, #tList do
+				if tList[i].Type ~= "Whitespace" then
+					self.Tokens[#self.Tokens + 1] = tList[i]
+				end
+			end
+			self.Index = 1
+			self.Total = #self.Tokens
+			return self
+		end
+		function Stream:peek(offset)
+			offset = offset or 0
+			local idx = self.Index + offset
+			if idx > 0 and idx <= self.Total then
+				return self.Tokens[idx]
+			end
+			return nil
+		end
+		function Stream:next()
+			local tok = self:peek()
+			self.Index = self.Index + 1
+			return tok
+		end
+		function Stream:eof()
+			return self.Index > self.Total
+		end
+
+		local stream = Stream.new(subTokens)
+
+		-- Classification Helpers
+		local BINARY_OPS = {
+			["+"] = true, ["-"] = true, ["*"] = true, ["/"] = true, ["%"] = true, ["^"] = true,
+			["="] = true, ["=="] = true, ["~="] = true, ["<="] = true, [">="] = true,
+			["<"] = true, [">"] = true, [".."] = true, ["and"] = true, ["or"] = true
+		}
+
+		local function isUnaryOp(tok, prevTok)
+			if not tok then return false end
+			local val = tok.Value
+			if val == "-" or val == "not" or val == "#" then
+				if not prevTok then return true end
+				local pVal = prevTok.Value
+				local pType = prevTok.Type
+				if BINARY_OPS[pVal] or pType == "Keyword" or pVal == "(" or pVal == "[" or pVal == "{" or pVal == "," or pVal == ";" then
+					return true
+				end
+			end
+			return false
+		end
+
+		-- Format Buffer
+		local buffer = {}
+		local indentLevel = 0
+		local lineHasContent = false
+
+		local function write(str)
+			buffer[#buffer + 1] = str
+			lineHasContent = true
+		end
+
+		local function writeIndent()
+			write(baseIndentStr .. string.rep(OPT_INDENT_CHAR, indentLevel))
+		end
+
+		local function writeNewline()
+			write("\n")
+			lineHasContent = false
+		end
+
+		-- Parse tokens into statements for block structures
+		local statements = {}
+		local currentStmt = {}
+		local parenDepth, braceDepth, bracketDepth = 0, 0, 0
+
+		-- Keywords that always start a new statement
+		local STMT_STARTERS = {
+			["local"] = true, ["function"] = true, ["if"] = true, ["while"] = true,
+			["for"] = true, ["repeat"] = true, ["return"] = true, ["break"] = true,
+			["else"] = true, ["elseif"] = true, ["end"] = true, ["until"] = true
+		}
+
+		while not stream:eof() do
+			local tok = stream:next()
+			if tok.Value == "(" then parenDepth = parenDepth + 1
+			elseif tok.Value == ")" then parenDepth = math.max(0, parenDepth - 1)
+			elseif tok.Value == "{" then braceDepth = braceDepth + 1
+			elseif tok.Value == "}" then braceDepth = math.max(0, braceDepth - 1)
+			elseif tok.Value == "[" then bracketDepth = bracketDepth + 1
+			elseif tok.Value == "]" then bracketDepth = math.max(0, bracketDepth - 1)
+			end
+
+			local isAtDepth0 = (parenDepth == 0 and braceDepth == 0 and bracketDepth == 0)
+			if isAtDepth0 and #currentStmt > 0 then
+				if tok.Value == ";" then
+					if not OPT_REMOVE_SEMICOLONS then
+						currentStmt[#currentStmt + 1] = tok
+					end
+					statements[#statements + 1] = currentStmt
+					currentStmt = {}
+					tok = nil
+				elseif STMT_STARTERS[tok.Value] then
+					statements[#statements + 1] = currentStmt
+					currentStmt = {}
+				end
+			end
+
+			if tok then
+				currentStmt[#currentStmt + 1] = tok
+			end
+		end
+		if #currentStmt > 0 then
+			statements[#statements + 1] = currentStmt
+		end
+
+		-- Indentation state counters
+		local OPENERS = {
+			["do"] = true, ["then"] = true, ["repeat"] = true, ["function"] = true
+		}
+		local CLOSERS = {
+			["end"] = true, ["until"] = true, ["else"] = true, ["elseif"] = true
+		}
+
+		-- Main formatting loop over statements
+		local consecutiveBlanks = 0
+
+		for sIdx = 1, #statements do
+			local stmt = statements[sIdx]
+			if #stmt == 0 then continue end
+
+			-- Identify first token behavior (closers decrease indent before writing)
+			local firstTok = stmt[1]
+			local isCloser = CLOSERS[firstTok.Value]
+			if isCloser then
+				indentLevel = math.max(0, indentLevel - 1)
+			end
+
+			-- Blank line management
+			if sIdx > 1 then
+				local prevStmt = statements[sIdx - 1]
+				if firstTok.Type == "Comment" or (prevStmt[1] and prevStmt[1].Type == "Comment") then
+					if consecutiveBlanks < OPT_MAX_CONSECUTIVE_BLANKS then
+						writeNewline()
+						consecutiveBlanks = consecutiveBlanks + 1
+					end
+				else
+					consecutiveBlanks = 0
+				end
+			end
+
+			-- Write Statement line
+			writeIndent()
+
+			-- Inner token loop for spacing rules
+			local stmtBraceDepth = 0
+			local stmtParenDepth = 0
+
+			for tIdx = 1, #stmt do
+				local tok = stmt[tIdx]
+				local prevTok = stmt[tIdx - 1]
+				local nextTok = stmt[tIdx + 1]
+
+				-- Handle nested multi-line tables
+				if tok.Value == "{" then
+					stmtBraceDepth = stmtBraceDepth + 1
+					write("{")
+					local isComplexTable = false
+					local checkIdx = tIdx + 1
+					local nestedCount = 0
+					while checkIdx <= #stmt do
+						local checkTok = stmt[checkIdx]
+						if checkTok.Value == "}" then break end
+						if checkTok.Value == "{" or checkTok.Value == "," then
+							nestedCount = nestedCount + 1
+						end
+						checkIdx = checkIdx + 1
+					end
+					if nestedCount > 3 or string.len(rebuildSource(stmt)) > OPT_MAX_LINE_LENGTH then
+						isComplexTable = true
+					end
+
+					if isComplexTable then
+						indentLevel = indentLevel + 1
+						writeNewline()
+						writeIndent()
+					end
+				elseif tok.Value == "}" then
+					stmtBraceDepth = math.max(0, stmtBraceDepth - 1)
+					if prevTok and prevTok.Value ~= "{" then
+						if indentLevel > 0 and prevTok.Value == "," or prevTok.Value == ";" then
+							indentLevel = math.max(0, indentLevel - 1)
+							writeNewline()
+							writeIndent()
+						end
+					end
+					write("}")
+				elseif tok.Value == "," then
+					write(",")
+					if OPT_SPACE_AFTER_COMMA and nextTok and nextTok.Value ~= "}" then
+						write(" ")
+					end
+				elseif tok.Value == ";" then
+					write(";")
+					if nextTok then write(" ") end
+				else
+					-- Standard spacing evaluation
+					if prevTok and prevTok.Value ~= "{" and prevTok.Value ~= "," and prevTok.Value ~= ";" then
+						local spacing = ""
+
+						-- Dot/Colon accessors
+						if tok.Value == "." or tok.Value == ":" or prevTok.Value == "." or prevTok.Value == ":" then
+							spacing = ""
+						-- Index access bracket spacing
+						elseif tok.Value == "[" or prevTok.Value == "[" then
+							spacing = ""
+						elseif tok.Value == "]" or prevTok.Value == "]" then
+							spacing = ""
+						-- Function call spacing
+						elseif tok.Value == "(" then
+							if prevTok.Type == "Identifier" or prevTok.Value == ")" or prevTok.Value == "]" then
+								spacing = ""
+							else
+								spacing = " "
+							end
+						-- Parentheses padding
+						elseif tok.Value == ")" or prevTok.Value == "(" then
+							spacing = ""
+						-- Unary sign context
+						elseif isUnaryOp(tok, prevTok) then
+							spacing = " "
+						-- Binary operators spacing
+						elseif BINARY_OPS[tok.Value] or BINARY_OPS[prevTok.Value] then
+							if OPT_SPACE_AROUND_OPS then
+								spacing = " "
+							end
+						-- Keyword boundaries
+						elseif prevTok.Type == "Keyword" or tok.Type == "Keyword" then
+							spacing = " "
+						end
+
+						write(spacing)
+					end
+
+					write(tok.Value)
+				end
+			end
+
+			writeNewline()
+
+			-- Calculate trailing indentation shifts (openers increase indent)
+			local stmtNetIndent = 0
+			for tIdx = 1, #stmt do
+				local tok = stmt[tIdx]
+				if OPENERS[tok.Value] then
+					stmtNetIndent = stmtNetIndent + 1
+				elseif tok.Value == "end" then
+					stmtNetIndent = math.max(0, stmtNetIndent - 1)
+				end
+			end
+
+			indentLevel = indentLevel + stmtNetIndent
+
+			if firstTok.Value == "else" or firstTok.Value == "elseif" then
+				indentLevel = indentLevel + 1
+			end
+		end
+
+		-- Clean up duplicate blank lines at line ends and return final text
+		local rawFormatted = table.concat(buffer, "")
+		local cleanedLines = {}
+		local lines = string.split(rawFormatted, "\n")
+		local lastLineWasEmpty = false
+
+		for i = 1, #lines do
+			local line = lines[i]:gsub("%s*$", "")
+			if line == "" then
+				if not lastLineWasEmpty then
+					cleanedLines[#cleanedLines + 1] = line
+					lastLineWasEmpty = true
+				end
+			else
+				cleanedLines[#cleanedLines + 1] = line
+				lastLineWasEmpty = false
+			end
+		end
+
+		return table.concat(cleanedLines, "\n")
+	end
+
+	DecompilerHelper.BeautifyCode = function(codeFrame)
+		if not codeFrame then return end
+		local source = codeFrame:GetText()
+		local tokens = tokenize(source)
+		local formatted = beautifyTokens(tokens, "")
+		codeFrame:SetText(formatted)
+		warn("[DecompilerHelper] Source code formatted successfully.")
+	end
+
+	DecompilerHelper.BeautifyFunction = function(funcName, codeFrame)
+		if funcName == "" or not codeFrame then return end
+		local source = codeFrame:GetText()
+		local tokens = tokenize(source)
+
+		local startIdx, endIdx = findFunctionTokenBounds(funcName, tokens)
+		if not startIdx or not endIdx then
+			warn("[DecompilerHelper] Could not locate function body in the active editor for: " .. funcName)
+			return
+		end
+
+		local funcTokens = {}
+		for i = startIdx, endIdx do
+			funcTokens[#funcTokens + 1] = tokens[i]
+		end
+
+		-- Determine base indentation level preceding the function definition
+		local baseIndentStr = ""
+		local pIdx = startIdx - 1
+		if pIdx > 0 and tokens[pIdx].Type == "Whitespace" then
+			local ws = tokens[pIdx].Value
+			local lastNL = ws:match("\n([^\n]*)$")
+			if lastNL then
+				baseIndentStr = lastNL
+			else
+				baseIndentStr = ws
+			end
+		end
+
+		local formattedFuncText = beautifyTokens(funcTokens, baseIndentStr)
+
+		-- Construct the new tokens list replacing the function range with a single formatted string token
+		local newTokens = {}
+		for idx = 1, startIdx - 1 do
+			newTokens[#newTokens + 1] = tokens[idx]
+		end
+		newTokens[#newTokens + 1] = {
+			Type = "Whitespace",
+			Value = formattedFuncText
+		}
+		for idx = endIdx + 1, #tokens do
+			newTokens[#newTokens + 1] = tokens[idx]
+		end
+
+		local finalSource = rebuildSource(newTokens)
+		codeFrame:SetText(finalSource)
+		warn(("[DecompilerHelper] Function '%s' formatted successfully."):format(funcName))
+	end
+
+	-------------------------------------------------------------
 	-- SECTION 3: INTERACTIVE CALL CONSOLE & CLOSURE SEARCH
 	-------------------------------------------------------------
 	local function updateUpvaluesList()
@@ -783,6 +1203,11 @@ local function main()
 	local function updateActionsList()
 		local actions = {
 			{
+				Name = "Format Source Code",
+				Desc = "Standardizes script indents, operator spacing, and block nesting structures",
+				Func = function() DecompilerHelper.BeautifyCode(activeCodeFrame) end
+			},
+			{
 				Name = "Rename Local Variable",
 				Desc = "Renames the selected symbol safely using the tokenizer",
 				Func = function() DecompilerHelper.RenameSymbol(activeWord, activeCodeFrame) end
@@ -804,7 +1229,7 @@ local function main()
 					local idx = 1
 					for i = 1, #tokens do
 						local t = tokens[i]
-						if t.Type == "Identifier" and t.Value:match("^v_%d+$") or t.Value:match("^v%d+$") then
+						if t.Type == "Identifier" and (t.Value:match("^v_%d+$") or t.Value:match("^v%d+$")) then
 							if not nameMap[t.Value] then
 								nameMap[t.Value] = "local_var_" .. idx
 								idx = idx + 1
