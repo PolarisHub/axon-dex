@@ -51,6 +51,10 @@ local function main()
 	local ICON_OFF = 18
 	local NAME_OFF = 36
 	local LINE_COLOR = Color3.fromRGB(72, 72, 72)
+	local INITIAL_CHILD_LIMIT = 300
+	local CHILD_PAGE_SIZE = 300
+	local MAX_SUMMARY_SCAN = 80
+	local MAX_TEXT_VALUE = 260
 
 	-- State
 	local window, currentTab
@@ -65,11 +69,19 @@ local function main()
 	local activeExplorerType = "Globals" -- "Globals" or "Registry"
 	local scrollV, listFrame, searchBox, query = "", nil, nil, ""
 	local clickSys, context
+	local childLimitsByPath = {}
+	local summaryCache = setmetatable({}, {__mode = "k"})
+	local textWidthCache = {}
 
 	-- Tab 3: Threads Monitor variables
 	local threadsList = {}
+	local threadView = {}
+	local threadRows = {}
 	local selectedThread
-	local threadScroll, threadListFrame
+	local threadScroll, threadListFrame, threadStackBox, threadStackText, threadSearchBox
+	local threadFilter = ""
+	local threadScanToken = 0
+	local threadScanning = false
 
 	-- Tab 4: Disassembler variables
 	local disassembleScript
@@ -98,51 +110,85 @@ local function main()
 		return TYPE_COLORS[valType] or Color3.fromRGB(200, 200, 200)
 	end
 
+	local function setStatus(text)
+		if statusText then
+			statusText.Text = text
+		end
+	end
+
+	local function safeToString(val, maxLen)
+		local ok, result = pcall(tostring, val)
+		if not ok then
+			result = "<tostring error>"
+		end
+		result = result or "nil"
+		if maxLen and #result > maxLen then
+			return result:sub(1, math.max(1, maxLen - 3)) .. "..."
+		end
+		return result
+	end
+
+	local function getTextWidth(text, fontSize)
+		local cacheKey = tostring(fontSize) .. "\0" .. text
+		local cached = textWidthCache[cacheKey]
+		if cached then return cached end
+		cached = service.TextService:GetTextSize(text, fontSize, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
+		textWidthCache[cacheKey] = cached
+		return cached
+	end
+
 	local function formatValue(val, valType)
 		if valType == "string" then
-			return '"' .. tostring(val) .. '"'
+			return '"' .. safeToString(val, MAX_TEXT_VALUE) .. '"'
 		elseif valType == "nil" then
 			return "nil"
 		elseif valType == "table" then
-			return "Table: " .. tostring(val)
+			return "Table: " .. safeToString(val, MAX_TEXT_VALUE)
 		elseif valType == "function" then
 			local name = "anonymous"
 			pcall(function()
 				local inf = debug.getinfo(val)
 				name = inf.name ~= "" and inf.name or ("anonymous_line_%d"):format(inf.linedefined or 0)
 			end)
-			return ("Function: %s (%s)"):format(name, tostring(val))
+			return ("Function: %s (%s)"):format(name, safeToString(val, 120))
 		elseif valType == "userdata" or typeof(val) == "Instance" then
-			local str = tostring(val)
+			local str = safeToString(val, MAX_TEXT_VALUE)
 			local name = str
 			pcall(function()
 				if typeof(val) == "Instance" then
-					name = val:GetFullName()
+					name = safeToString(val:GetFullName(), MAX_TEXT_VALUE)
 				else
 					local getraw = getrawmetatable or getmetatable
 					local mt = getraw(val)
 					if mt then
 						if mt.__type then
-							name = tostring(mt.__type) .. " (" .. str .. ")"
+							name = safeToString(mt.__type, 80) .. " (" .. str .. ")"
 						elseif mt.__tostring then
-							name = tostring(val)
+							name = safeToString(val, MAX_TEXT_VALUE)
 						end
 					end
 				end
 			end)
 			return name
 		else
-			return tostring(val)
+			return safeToString(val, MAX_TEXT_VALUE)
 		end
 	end
 
 	local function getTableSummary(tbl)
+		local cached = summaryCache[tbl]
+		if cached then return cached end
+
 		local counts = {}
 		local total = 0
+		local truncated = false
 		local success = pcall(function()
 			for k, v in next, tbl do
 				total = total + 1
-				if total > 200 then break end
+				if total > MAX_SUMMARY_SCAN then
+					truncated = true
+					break
+				end
 				local t = typeof(v)
 				counts[t] = (counts[t] or 0) + 1
 			end
@@ -169,10 +215,119 @@ local function main()
 		end
 
 		if #parts > 0 then
-			return " (" .. table.concat(parts, ", ") .. ")"
+			cached = " (" .. (truncated and (tostring(MAX_SUMMARY_SCAN) .. "+ sampled: ") or "") .. table.concat(parts, ", ") .. ")"
 		else
-			return " (empty)"
+			cached = " (empty)"
 		end
+		summaryCache[tbl] = cached
+		return cached
+	end
+
+	local function getNodeValueText(node)
+		if not node.ValueText then
+			node.ValueText = formatValue(node.Value, node.ValueType)
+		end
+		return node.ValueText
+	end
+
+	local function clearCaches()
+		summaryCache = setmetatable({}, {__mode = "k"})
+		textWidthCache = {}
+	end
+
+	local function getFunctionInfo(func)
+		local info = {}
+		local scriptObj
+		local getinfo = (debug and (debug.getinfo or debug.info)) or getinfo
+		if getinfo then
+			pcall(function()
+				local result = getinfo(func)
+				if type(result) == "table" then
+					info = result
+				end
+			end)
+		end
+		pcall(function()
+			local fenv = getfenv and getfenv(func)
+			if fenv then
+				scriptObj = rawget(fenv, "script") or fenv.script
+			end
+		end)
+		return info, scriptObj
+	end
+
+	local function getFunctionDisplayName(func)
+		local info = getFunctionInfo(func)
+		local name = info.name
+		if name and name ~= "" then
+			return name
+		end
+		if info.linedefined and info.linedefined >= 0 then
+			return ("anonymous_line_%d"):format(info.linedefined)
+		end
+		return "anonymous"
+	end
+
+	local function buildFunctionReport(func, label)
+		local info, scriptObj = getFunctionInfo(func)
+		local lines = {}
+		lines[#lines + 1] = "-- Axon Function Inspector"
+		lines[#lines + 1] = "-- Name: " .. (label or getFunctionDisplayName(func))
+		lines[#lines + 1] = "-- Object: " .. safeToString(func, 180)
+		if typeof(scriptObj) == "Instance" then
+			lines[#lines + 1] = "-- Script: " .. safeToString(scriptObj:GetFullName(), 220)
+		end
+		if info.source then lines[#lines + 1] = "-- Source: " .. safeToString(info.source, 220) end
+		if info.short_src then lines[#lines + 1] = "-- Short Source: " .. safeToString(info.short_src, 220) end
+		if info.linedefined then lines[#lines + 1] = "-- Defined Line: " .. tostring(info.linedefined) end
+		if info.lastlinedefined then lines[#lines + 1] = "-- Last Line: " .. tostring(info.lastlinedefined) end
+		if info.numparams then lines[#lines + 1] = "-- Params: " .. tostring(info.numparams) end
+		if info.isvararg ~= nil then lines[#lines + 1] = "-- Vararg: " .. tostring(info.isvararg) end
+		if info.what then lines[#lines + 1] = "-- What: " .. safeToString(info.what, 80) end
+
+		local getupvalues = (debug and debug.getupvalues) or getupvalues or getupvals
+		local getconstants = (debug and debug.getconstants) or getconstants or getconsts
+		local getprotos = (debug and debug.getprotos) or getprotos
+
+		if getupvalues then
+			local ok, upvalues = pcall(getupvalues, func)
+			if ok and upvalues then
+				lines[#lines + 1] = ""
+				lines[#lines + 1] = "-- Upvalues (" .. tostring(#upvalues) .. ")"
+				for i = 1, math.min(#upvalues, 250) do
+					local value = upvalues[i]
+					lines[#lines + 1] = ("[%d] <%s> %s"):format(i, typeof(value), formatValue(value, typeof(value)))
+				end
+				if #upvalues > 250 then
+					lines[#lines + 1] = ("-- ... %d more upvalues"):format(#upvalues - 250)
+				end
+			end
+		end
+
+		if getconstants then
+			local ok, constants = pcall(getconstants, func)
+			if ok and constants then
+				lines[#lines + 1] = ""
+				lines[#lines + 1] = "-- Constants (" .. tostring(#constants) .. ")"
+				for i = 1, math.min(#constants, 250) do
+					local value = constants[i]
+					lines[#lines + 1] = ("[%d] <%s> %s"):format(i, typeof(value), formatValue(value, typeof(value)))
+				end
+				if #constants > 250 then
+					lines[#lines + 1] = ("-- ... %d more constants"):format(#constants - 250)
+				end
+			end
+		end
+
+		if getprotos then
+			local ok, protos = pcall(getprotos, func)
+			if ok and protos then
+				lines[#lines + 1] = ""
+				lines[#lines + 1] = "-- Prototypes: " .. tostring(#protos)
+			end
+		end
+
+		return table.concat(lines, "\n")
 	end
 
 	local function parseValue(valStr, targetType)
@@ -208,19 +363,13 @@ local function main()
 			local tList = {}
 			local depth = node.Depth + 1
 			local count = 0
+			local limit = childLimitsByPath[node.Path] or INITIAL_CHILD_LIMIT
+			local truncated = false
 			pcall(function()
 				for k, v in next, node.Value do
 					count = count + 1
-					if count > 200 then
-						tList[#tList + 1] = {
-							Name = "... (truncated)",
-							Type = "Metadata",
-							Depth = depth,
-							Parent = node,
-							Children = {},
-							Value = "Truncated",
-							ValueType = "string"
-						}
+					if count > limit then
+						truncated = true
 						break
 					end
 					local vType = typeof(v)
@@ -228,21 +377,37 @@ local function main()
 					if vType == "table" then
 						tbValText = getTableSummary(v)
 					end
+					local keyText = safeToString(k, 90)
+					local childPath = node.Path .. "/" .. keyText
 					local childNode = {
-						Name = tostring(k) .. ":" .. tbValText,
+						Name = "[" .. keyText .. "]" .. tbValText,
 						Type = "TableMember",
 						Depth = depth,
-						Expanded = false,
+						Expanded = expandedByPath[childPath] or false,
 						Parent = node,
 						Children = {},
 						Key = k,
 						Value = v,
 						ValueType = vType
 					}
-					childNode.Path = node.Path .. "/" .. tostring(k)
+					childNode.Path = childPath
 					tList[#tList + 1] = childNode
 				end
 			end)
+			if truncated then
+				tList[#tList + 1] = {
+					Name = ("... load %d more (showing %d+)"):format(CHILD_PAGE_SIZE, limit),
+					Type = "LoadMore",
+					Depth = depth,
+					Parent = node,
+					Children = {},
+					Value = "Click to load more entries safely",
+					ValueType = "string",
+					LoadParentPath = node.Path,
+					NextLimit = limit + CHILD_PAGE_SIZE,
+					Path = node.Path .. "/__load_more_" .. tostring(limit)
+				}
+			end
 			node.Children = tList
 		elseif type(node.Value) == "function" then
 			-- Load function metadata/upvalues/constants
@@ -251,8 +416,29 @@ local function main()
 
 			local getupvalues = (debug and debug.getupvalues) or getupvalues or getupvals
 			local getconstants = (debug and debug.getconstants) or getconstants or getconsts
-			local getinfo = (debug and (debug.getinfo or debug.info)) or getinfo
 			local getprotos = (debug and debug.getprotos) or getprotos
+
+			local info, scriptObj = getFunctionInfo(node.Value)
+			local infoText = "Info"
+			if info.linedefined then
+				infoText = infoText .. (" | line %s"):format(tostring(info.linedefined))
+			end
+			if info.numparams then
+				infoText = infoText .. (" | %s params"):format(tostring(info.numparams))
+			end
+			if typeof(scriptObj) == "Instance" then
+				infoText = infoText .. " | " .. safeToString(scriptObj.Name, 60)
+			end
+			children[#children + 1] = {
+				Name = infoText,
+				Type = "Metadata",
+				Depth = depth,
+				Parent = node,
+				Children = {},
+				Value = safeToString(node.Value, 180),
+				ValueType = "string",
+				Path = node.Path .. "/Info"
+			}
 
 			-- 1. Upvalues
 			local s, upvals = pcall(getupvalues, node.Value)
@@ -261,18 +447,20 @@ local function main()
 					Name = "Upvalues (" .. #upvals .. ")",
 					Type = "UpvaluesFolder",
 					Depth = depth,
-					Expanded = false,
 					Parent = node,
 					Children = {}
 				}
 				upsNode.Path = node.Path .. "/Upvalues"
+				upsNode.Expanded = expandedByPath[upsNode.Path] or false
 				for idx, val in next, upvals do
 					local vType = typeof(val)
 					local summary = vType == "table" and getTableSummary(val) or ""
+					local upPath = upsNode.Path .. "/" .. idx
 					local upNode = {
 						Name = ("[%d] upval_%d%s"):format(idx, idx, summary),
 						Type = "Upvalue",
 						Depth = depth + 1,
+						Expanded = expandedByPath[upPath] or false,
 						Index = idx,
 						Parent = upsNode,
 						Children = {},
@@ -280,7 +468,7 @@ local function main()
 						ValueType = vType,
 						Func = node.Value
 					}
-					upNode.Path = upsNode.Path .. "/" .. idx
+					upNode.Path = upPath
 					upsNode.Children[#upsNode.Children + 1] = upNode
 				end
 				children[#children + 1] = upsNode
@@ -293,18 +481,20 @@ local function main()
 					Name = "Constants (" .. #consts .. ")",
 					Type = "ConstantsFolder",
 					Depth = depth,
-					Expanded = false,
 					Parent = node,
 					Children = {}
 				}
 				constsNode.Path = node.Path .. "/Constants"
+				constsNode.Expanded = expandedByPath[constsNode.Path] or false
 				for idx, val in next, consts do
 					local vType = typeof(val)
 					local summary = vType == "table" and getTableSummary(val) or ""
+					local conPath = constsNode.Path .. "/" .. idx
 					local conNode = {
 						Name = ("[%d]%s"):format(idx, summary),
 						Type = "Constant",
 						Depth = depth + 1,
+						Expanded = expandedByPath[conPath] or false,
 						Index = idx,
 						Parent = constsNode,
 						Children = {},
@@ -312,7 +502,7 @@ local function main()
 						ValueType = vType,
 						Func = node.Value
 					}
-					conNode.Path = constsNode.Path .. "/" .. idx
+					conNode.Path = conPath
 					constsNode.Children[#constsNode.Children + 1] = conNode
 				end
 				children[#children + 1] = constsNode
@@ -326,28 +516,26 @@ local function main()
 						Name = "Prototypes (" .. #protos .. ")",
 						Type = "PrototypesFolder",
 						Depth = depth,
-						Expanded = false,
 						Parent = node,
 						Children = {}
 					}
 					protosNode.Path = node.Path .. "/Prototypes"
+					protosNode.Expanded = expandedByPath[protosNode.Path] or false
 					for idx, pFunc in next, protos do
-						local pName = "anonymous"
-						pcall(function()
-							local inf = getinfo(pFunc)
-							pName = inf.name ~= "" and inf.name or ("anonymous_line_%d"):format(inf.linedefined or 0)
-						end)
+						local pName = getFunctionDisplayName(pFunc)
+						local protoPath = protosNode.Path .. "/" .. idx
 						local pNode = {
 							Name = ("[%d] %s"):format(idx, pName),
 							Type = "Function",
 							Func = pFunc,
 							Depth = depth + 1,
+							Expanded = expandedByPath[protoPath] or false,
 							Parent = protosNode,
 							Children = {},
 							Value = pFunc,
 							ValueType = "function"
 						}
-						pNode.Path = protosNode.Path .. "/" .. idx
+						pNode.Path = protoPath
 						protosNode.Children[#protosNode.Children + 1] = pNode
 					end
 					children[#children + 1] = protosNode
@@ -362,13 +550,24 @@ local function main()
 		table.clear(tree)
 		local lq = query:lower()
 
+		local function nodeMatches(node)
+			if lq == "" then return true end
+			if string.find(node.Name:lower(), lq, 1, true) then return true end
+			if node.Value ~= nil then
+				return string.find(getNodeValueText(node):lower(), lq, 1, true) ~= nil
+			end
+			return false
+		end
+
 		local function addExpanded(node)
 			if node.Expanded then
 				loadNodeChildren(node)
 				for i = 1, #node.Children do
 					local child = node.Children[i]
-					tree[#tree + 1] = child
-					addExpanded(child)
+					if lq == "" or nodeMatches(child) or child.Expanded then
+						tree[#tree + 1] = child
+						addExpanded(child)
+					end
 				end
 			end
 		end
@@ -396,7 +595,7 @@ local function main()
 					ValueType = "table",
 					Path = r.Name
 				}
-				if matchQuery(node.Name) or node.Expanded then
+				if lq == "" or matchQuery(node.Name) or node.Expanded then
 					tree[#tree + 1] = node
 					addExpanded(node)
 				end
@@ -405,19 +604,31 @@ local function main()
 			-- Registry explorer
 			local reg = (debug and debug.getregistry) or getreg
 			if reg then
-				local regVal = reg()
-				local rootNode = {
-					Name = "Registry (" .. #regVal .. ")" .. getTableSummary(regVal),
-					Type = "RootFolder",
-					Depth = 0,
-					Expanded = expandedByPath["Registry"] or false,
-					Children = {},
-					Value = regVal,
-					ValueType = "table",
-					Path = "Registry"
-				}
-				tree[#tree + 1] = rootNode
-				addExpanded(rootNode)
+				local ok, regVal = pcall(reg)
+				if ok and type(regVal) == "table" then
+					local rootNode = {
+						Name = "Registry (" .. #regVal .. ")" .. getTableSummary(regVal),
+						Type = "RootFolder",
+						Depth = 0,
+						Expanded = expandedByPath["Registry"] or false,
+						Children = {},
+						Value = regVal,
+						ValueType = "table",
+						Path = "Registry"
+					}
+					tree[#tree + 1] = rootNode
+					addExpanded(rootNode)
+				else
+					tree[#tree + 1] = {
+						Name = "Registry (failed to read)",
+						Type = "Metadata",
+						Depth = 0,
+						Children = {},
+						Value = safeToString(regVal, MAX_TEXT_VALUE),
+						ValueType = "string",
+						Path = "Error"
+					}
+				end
 			else
 				tree[#tree + 1] = {
 					Name = "Registry (not supported by executor)",
@@ -547,12 +758,13 @@ local function main()
 					entry.ValueLabel.Visible = false
 				else
 					entry.Name.TextColor3 = Color3.fromRGB(150, 150, 150)
-					local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
+					local nameSize = node.NameWidth or getTextWidth(node.Name, 13)
+					node.NameWidth = nameSize
 					entry.Name.Size = UDim2.new(0, nameSize + 4, 1, 0)
 
 					entry.ValueLabel.Position = UDim2.new(0, depth * INDENT + NAME_OFF + nameSize + 8, 0, 0)
 					entry.ValueLabel.Size = UDim2.new(1, -(depth * INDENT + NAME_OFF + nameSize + 8) - 4, 1, 0)
-					entry.ValueLabel.Text = formatValue(node.Value, node.ValueType)
+					entry.ValueLabel.Text = getNodeValueText(node)
 					entry.ValueLabel.TextColor3 = getTypeColor(node.ValueType)
 					entry.ValueLabel.Visible = true
 
@@ -575,11 +787,12 @@ local function main()
 				elseif node.Type == "RootFolder" or node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "PrototypesFolder" then iconKey = "Group"
 				elseif node.Type == "Upvalue" then iconKey = "Reference"
 				elseif node.Type == "Constant" then iconKey = "SelectChildren"
+				elseif node.Type == "LoadMore" then iconKey = "Expand"
 				elseif node.ValueType == "table" then iconKey = "Honey"
 				elseif node.Type == "Metadata" then iconKey = "ExploreData"
 				end
 				miscIcons:DisplayByKey(entry.Icon, iconKey)
-				entry.Icon.ImageTransparency = (node.ValueType == "function" or node.Type == "Upvalue") and 0 or 0.35
+				entry.Icon.ImageTransparency = (node.ValueType == "function" or node.Type == "Upvalue" or node.Type == "LoadMore") and 0 or 0.35
 
 				drawLines(entry, node)
 
@@ -619,6 +832,8 @@ local function main()
 		editBox.Visible = editingVisible
 		confirmBtn.Visible = editingVisible
 	end
+
+	local refreshExplorerTree, collapseExplorerTree, loadMoreChildren, openTextInScriptViewer, openFunctionSource
 
 	EnvExplorer.NewEntry = function(index)
 		local entryGui = createSimple("TextButton", {
@@ -731,6 +946,12 @@ local function main()
 		entry.Expand.MouseButton1Click:Connect(function()
 			local node = tree[index + scrollV.Index]
 			if not node then return end
+			if node.Type == "LoadMore" then
+				loadMoreChildren(node)
+				return
+			end
+			local canExpand = (node.ValueType == "table" or node.ValueType == "function" or node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "PrototypesFolder")
+			if not canExpand then return end
 			node.Expanded = not node.Expanded
 			expandedByPath[node.Path] = node.Expanded
 			flattenTree()
@@ -748,7 +969,8 @@ local function main()
 		if not entry then return end
 
 		editBox.Text = tostring(node.Value)
-		local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
+		local nameSize = node.NameWidth or getTextWidth(node.Name, 13)
+		node.NameWidth = nameSize
 		local xPos = node.Depth * INDENT + NAME_OFF + nameSize + 8
 
 		editBox.Position = UDim2.new(0, xPos, 0, entry.Gui.Position.Y.Offset + 2)
@@ -761,9 +983,105 @@ local function main()
 		confirmBtn.Visible = true
 	end
 
+	function refreshExplorerTree()
+		clearCaches()
+		selectedNode = nil
+		editingNode = nil
+		if editBox then editBox.Visible = false end
+		if confirmBtn then confirmBtn.Visible = false end
+		flattenTree()
+		updateExplorerView()
+	end
+
+	function collapseExplorerTree()
+		table.clear(expandedByPath)
+		table.clear(childLimitsByPath)
+		clearCaches()
+		selectedNode = nil
+		editingNode = nil
+		if scrollV then scrollV:ScrollTo(0, true) end
+		flattenTree()
+		updateExplorerView()
+	end
+
+	function loadMoreChildren(node)
+		if not node then return end
+		local targetPath = node.LoadParentPath or node.Path
+		childLimitsByPath[targetPath] = node.NextLimit or ((childLimitsByPath[targetPath] or INITIAL_CHILD_LIMIT) + CHILD_PAGE_SIZE)
+		setStatus(("Loading more entries for %s..."):format(targetPath))
+		flattenTree()
+		updateExplorerView()
+	end
+
+	function openTextInScriptViewer(text)
+		if not ScriptViewer or not ScriptViewer.Window or not ScriptViewer.codeFrame then return false end
+		ScriptViewer.Window:Show()
+		ScriptViewer.codeFrame.OwnerScript = nil
+		ScriptViewer.codeFrame:SetText(text)
+		return true
+	end
+
+	function openFunctionSource(func)
+		local info, scriptObj = getFunctionInfo(func)
+		if typeof(scriptObj) == "Instance" and ScriptViewer and ScriptViewer.ViewScript then
+			local line = tonumber(info.linedefined) or nil
+			ScriptViewer.ViewScript(scriptObj, line)
+			return true
+		end
+
+		local decompile = env and env.decompile
+		if decompile then
+			local ok, src = pcall(decompile, func)
+			if ok and src then
+				return openTextInScriptViewer(src)
+			end
+		end
+		return false
+	end
+
 	local function showExplorerContextMenu(position)
 		if not selectedNode then return end
 		context:Clear()
+
+		if selectedNode.Type == "LoadMore" then
+			context:Add({
+				Name = "Load More Entries",
+				IconMap = Main.MiscIcons,
+				Icon = "Expand",
+				OnClick = function()
+					loadMoreChildren(selectedNode)
+				end
+			})
+			local mouse = Main.Mouse
+			context:Show(position and position.X or mouse.X, position and position.Y or mouse.Y)
+			return
+		end
+
+		local canExpand = (selectedNode.ValueType == "table" or selectedNode.ValueType == "function" or selectedNode.Type == "UpvaluesFolder" or selectedNode.Type == "ConstantsFolder" or selectedNode.Type == "PrototypesFolder")
+		if canExpand then
+			context:Add({
+				Name = selectedNode.Expanded and "Collapse" or "Expand",
+				IconMap = Main.MiscIcons,
+				Icon = selectedNode.Expanded and "Collapse" or "Expand",
+				OnClick = function()
+					selectedNode.Expanded = not selectedNode.Expanded
+					expandedByPath[selectedNode.Path] = selectedNode.Expanded
+					flattenTree()
+					updateExplorerView()
+				end
+			})
+		end
+
+		if selectedNode.ValueType == "table" then
+			context:Add({
+				Name = ("Increase Child Limit (+%d)"):format(CHILD_PAGE_SIZE),
+				IconMap = Main.MiscIcons,
+				Icon = "Expand",
+				OnClick = function()
+					loadMoreChildren(selectedNode)
+				end
+			})
+		end
 
 		local isEditable = (selectedNode.Type == "Upvalue" or selectedNode.Type == "Constant" or selectedNode.Type == "TableMember") and (selectedNode.ValueType == "number" or selectedNode.ValueType == "boolean" or selectedNode.ValueType == "string" or selectedNode.ValueType == "Vector3" or selectedNode.ValueType == "Color3")
 		if isEditable then
@@ -791,9 +1109,27 @@ local function main()
 				IconMap = Main.MiscIcons,
 				Icon = "Copy",
 				OnClick = function()
-					pcall(setclipboard or writeclipboard, tostring(selectedNode.Value))
+					pcall(setclipboard or writeclipboard, safeToString(selectedNode.Value))
 				end
 			})
+			context:Add({
+				Name = "Copy Type",
+				IconMap = Main.MiscIcons,
+				Icon = "ExploreData",
+				OnClick = function()
+					pcall(setclipboard or writeclipboard, safeToString(selectedNode.ValueType))
+				end
+			})
+			if selectedNode.Type == "TableMember" then
+				context:Add({
+					Name = "Copy Key",
+					IconMap = Main.MiscIcons,
+					Icon = "Copy",
+					OnClick = function()
+						pcall(setclipboard or writeclipboard, safeToString(selectedNode.Key))
+					end
+				})
+			end
 			context:Add({
 				Name = "Copy Path",
 				IconMap = Main.MiscIcons,
@@ -806,23 +1142,30 @@ local function main()
 
 		if selectedNode.ValueType == "function" then
 			context:Add({
-				Name = "Decompile Function",
+				Name = "Open Source Script",
 				IconMap = Main.MiscIcons,
 				Icon = "ViewScript",
 				OnClick = function()
-					local scr = selectedNode.FuncScript
-					if scr then
-						ScriptViewer.ViewScript(scr)
-					else
-						-- fallback: try to decompile function object directly if supported
-						local s, src = pcall(env.decompile, selectedNode.Value)
-						if s and src then
-							ScriptViewer.Window:Show()
-							ScriptViewer.codeFrame:SetText(src)
-						else
-							warn("[EnvExplorer] Cannot decompile this function closure.")
-						end
+					if not openFunctionSource(selectedNode.Value) then
+						openTextInScriptViewer(buildFunctionReport(selectedNode.Value, selectedNode.Name))
+						warn("[EnvExplorer] Could not open source directly; opened function report instead.")
 					end
+				end
+			})
+			context:Add({
+				Name = "Open Function Report",
+				IconMap = Main.MiscIcons,
+				Icon = "ExploreData",
+				OnClick = function()
+					openTextInScriptViewer(buildFunctionReport(selectedNode.Value, selectedNode.Name))
+				end
+			})
+			context:Add({
+				Name = "Copy Function Report",
+				IconMap = Main.MiscIcons,
+				Icon = "Copy",
+				OnClick = function()
+					pcall(setclipboard or writeclipboard, buildFunctionReport(selectedNode.Value, selectedNode.Name))
 				end
 			})
 		end
@@ -842,6 +1185,12 @@ local function main()
 			local node = tree[ind + scrollV.Index]
 			if not node then return end
 
+			if button == 1 and node.Type == "LoadMore" then
+				selectedNode = node.Parent or node
+				loadMoreChildren(node)
+				return
+			end
+
 			selectedNode = node
 			updateExplorerView()
 
@@ -850,10 +1199,15 @@ local function main()
 				if isEditable then
 					setEditingNode(node, ind)
 				else
-					node.Expanded = not node.Expanded
-					expandedByPath[node.Path] = node.Expanded
-					flattenTree()
-					updateExplorerView()
+					local canExpand = (node.ValueType == "table" or node.ValueType == "function" or node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "PrototypesFolder")
+					if canExpand then
+						node.Expanded = not node.Expanded
+						expandedByPath[node.Path] = node.Expanded
+						flattenTree()
+						updateExplorerView()
+					elseif node.ValueType == "function" then
+						openFunctionSource(node.Value)
+					end
 				end
 			end
 		end)
@@ -864,100 +1218,220 @@ local function main()
 	end
 
 	-- Tab 3: Threads Monitor Logic
-	local function refreshThreadsList()
-		table.clear(threadsList)
-		-- Walk the registry / threads list if supported
-		local reg = (debug and debug.getregistry) or getreg
-		if reg then
-			local count = 0
-			pcall(function()
-				for _, v in next, reg() do
-					if typeof(v) == "thread" then
-						count = count + 1
-						local status = coroutine.status(v)
-						local stack = "No call stack available."
-						pcall(function()
-							stack = debug.traceback(v)
-						end)
+	local function getThreadStatusColor(status)
+		if status == "running" then
+			return Color3.fromRGB(120, 210, 120)
+		elseif status == "suspended" then
+			return Color3.fromRGB(215, 186, 125)
+		elseif status == "dead" then
+			return Color3.fromRGB(170, 90, 90)
+		end
+		return Color3.fromRGB(150, 180, 220)
+	end
 
-						threadsList[#threadsList + 1] = {
-							Thread = v,
-							Name = "Thread #" .. count .. " (" .. tostring(v) .. ")",
-							Status = status,
-							Stack = stack
-						}
-					end
+	local function getThreadStack(tData)
+		if not tData then return "Select a thread to view its traceback." end
+		if not tData.Stack then
+			local traceback = debug and debug.traceback
+			local ok, stack = false, nil
+			if traceback then
+				ok, stack = pcall(traceback, tData.Thread)
+			end
+			tData.Stack = (ok and stack and stack ~= "") and stack or "No call stack available for this thread."
+		end
+		return tData.Stack
+	end
+
+	local function updateThreadStackView()
+		if not threadStackText then return end
+		threadStackText.Text = getThreadStack(selectedThread)
+		if selectedThread then
+			setStatus("Thread Stack: " .. selectedThread.Name)
+		elseif threadScanning then
+			setStatus("Scanning registry for threads...")
+		else
+			setStatus(("Scanned %d threads."):format(#threadsList))
+		end
+		if threadStackBox then
+			task.defer(function()
+				if threadStackText and threadStackBox then
+					local height = math.max(threadStackText.TextBounds.Y + 14, threadStackBox.AbsoluteSize.Y - 10)
+					threadStackText.Size = UDim2.new(1, -10, 0, height)
+					threadStackBox.CanvasSize = UDim2.new(0, 0, 0, height + 10)
 				end
 			end)
 		end
+	end
 
-		table.sort(threadsList, function(a, b)
-			return a.Status < b.Status
-		end)
+	local function rebuildThreadView()
+		table.clear(threadView)
+		local filter = threadFilter:lower()
+		for i = 1, #threadsList do
+			local tData = threadsList[i]
+			if filter == "" or tData.SearchText:find(filter, 1, true) then
+				threadView[#threadView + 1] = tData
+			end
+		end
+	end
 
-		threadScroll.TotalSpace = #threadsList
+	local function renderThreadsList()
+		if not threadScroll or not threadListFrame then return end
+		rebuildThreadView()
+
+		local maxRows = math.max(math.ceil(threadListFrame.AbsoluteSize.Y / 30), 0)
+		threadScroll.VisibleSpace = maxRows
+		threadScroll.TotalSpace = #threadView
+		threadScroll.Gui.Visible = #threadView > maxRows
 		threadScroll:Update()
 
-		-- render thread frames
-		local maxRows = math.max(math.ceil(threadListFrame.AbsoluteSize.Y / 30), 0)
 		for i = 1, maxRows do
 			local idx = i + threadScroll.Index
-			local tData = threadsList[idx]
-			local frameName = "ThreadRow_" .. i
-			local rowFrame = threadListFrame:FindFirstChild(frameName)
+			local tData = threadView[idx]
+			local rowFrame = threadRows[i]
 			if not rowFrame then
 				rowFrame = createSimple("TextButton", {
-					Name = frameName,
+					Name = "ThreadRow_" .. i,
+					AutoButtonColor = false,
 					BackgroundColor3 = Settings.Theme.Main1,
 					BorderSizePixel = 0,
 					Size = UDim2.new(1, 0, 0, 28),
 					Position = UDim2.new(0, 0, 0, (i - 1) * 30),
-					Font = Enum.Font.Code,
-					TextSize = 13,
-					TextXAlignment = Enum.TextXAlignment.Left,
+					Text = "",
 					Parent = threadListFrame
 				})
-				local stroke = createSimple("UIStroke", {
-					Color = Settings.Theme.Outline1,
-					Thickness = 1,
+				createSimple("UICorner", {CornerRadius = UDim.new(0, 4), Parent = rowFrame})
+				createSimple("UIStroke", {Color = Settings.Theme.Outline1, Thickness = 1, Parent = rowFrame})
+				createSimple("Frame", {
+					Name = "ActiveBar",
+					BackgroundColor3 = Settings.Theme.Highlight,
+					BorderSizePixel = 0,
+					Position = UDim2.new(0, 0, 0, 3),
+					Size = UDim2.new(0, 3, 1, -6),
+					Visible = false,
 					Parent = rowFrame
 				})
-				createSimple("UICorner", {
-					CornerRadius = UDim.new(0, 4),
+				createSimple("TextLabel", {
+					Name = "NameLabel",
+					BackgroundTransparency = 1,
+					Font = Enum.Font.Code,
+					Position = UDim2.new(0, 8, 0, 0),
+					Size = UDim2.new(1, -98, 1, 0),
+					TextColor3 = Settings.Theme.Text,
+					TextSize = 13,
+					TextXAlignment = Enum.TextXAlignment.Left,
 					Parent = rowFrame
 				})
-
+				createSimple("TextLabel", {
+					Name = "StatusLabel",
+					BackgroundTransparency = 1,
+					Font = Enum.Font.SourceSansBold,
+					Position = UDim2.new(1, -86, 0, 0),
+					Size = UDim2.new(0, 80, 1, 0),
+					TextSize = 12,
+					TextXAlignment = Enum.TextXAlignment.Right,
+					Parent = rowFrame
+				})
 				rowFrame.MouseButton1Click:Connect(function()
-					local tIdx = i + threadScroll.Index
-					local activeT = threadsList[tIdx]
+					local viewIndex = rowFrame:GetAttribute("ThreadIndex")
+					local activeT = viewIndex and threadView[viewIndex]
 					if activeT then
 						selectedThread = activeT
-						refreshThreadsList()
+						updateThreadStackView()
+						renderThreadsList()
 					end
 				end)
+				threadRows[i] = rowFrame
 			end
 
 			if tData then
-				rowFrame.Text = ("  %s | Status: %s"):format(tData.Name, tData.Status)
+				rowFrame:SetAttribute("ThreadIndex", idx)
+				rowFrame.NameLabel.Text = tData.Name
+				rowFrame.StatusLabel.Text = tData.Status
+				rowFrame.StatusLabel.TextColor3 = getThreadStatusColor(tData.Status)
 				if tData == selectedThread then
 					rowFrame.BackgroundColor3 = Settings.Theme.ListSelection
-					rowFrame.TextColor3 = Settings.Theme.Highlight
+					rowFrame.ActiveBar.Visible = true
+					rowFrame.NameLabel.TextColor3 = Settings.Theme.Highlight
 				else
 					rowFrame.BackgroundColor3 = Settings.Theme.Main1
-					rowFrame.TextColor3 = Settings.Theme.Text
+					rowFrame.ActiveBar.Visible = false
+					rowFrame.NameLabel.TextColor3 = Settings.Theme.Text
 				end
 				rowFrame.Visible = true
 			else
+				rowFrame:SetAttribute("ThreadIndex", nil)
 				rowFrame.Visible = false
 			end
 		end
 
-		-- update status text / details
-		if selectedThread then
-			statusText.Text = "Thread Stack: " .. selectedThread.Name
-		else
-			statusText.Text = ("Scanned %d active threads."):format(#threadsList)
+		for i = maxRows + 1, #threadRows do
+			threadRows[i].Visible = false
 		end
+		updateThreadStackView()
+	end
+
+	local function refreshThreadsList()
+		threadScanToken = threadScanToken + 1
+		local scanToken = threadScanToken
+		threadScanning = true
+		selectedThread = nil
+		table.clear(threadsList)
+		table.clear(threadView)
+		renderThreadsList()
+
+		task.spawn(function()
+			local reg = (debug and debug.getregistry) or getreg
+			if not reg then
+				threadScanning = false
+				setStatus("Thread registry unsupported by executor.")
+				updateThreadStackView()
+				return
+			end
+
+			local ok, registry = pcall(reg)
+			if not ok or type(registry) ~= "table" then
+				threadScanning = false
+				setStatus("Failed to read registry for threads.")
+				updateThreadStackView()
+				return
+			end
+
+			local seen = {}
+			local scanned = 0
+			local count = 0
+			for _, value in next, registry do
+				scanned = scanned + 1
+				if typeof(value) == "thread" and not seen[value] then
+					seen[value] = true
+					count = count + 1
+					local okStatus, status = pcall(coroutine.status, value)
+					status = okStatus and status or "unknown"
+					local threadName = ("Thread #%d (%s)"):format(count, safeToString(value, 80))
+					threadsList[#threadsList + 1] = {
+						Thread = value,
+						Name = threadName,
+						Status = status,
+						SearchText = (threadName .. " " .. status):lower()
+					}
+				end
+				if scanned % 500 == 0 then
+					if scanToken ~= threadScanToken then return end
+					setStatus(("Scanning registry... %d entries, %d threads"):format(scanned, #threadsList))
+					task.wait()
+				end
+			end
+
+			if scanToken ~= threadScanToken then return end
+			table.sort(threadsList, function(a, b)
+				if a.Status == b.Status then
+					return a.Name < b.Name
+				end
+				return a.Status < b.Status
+			end)
+			threadScanning = false
+			renderThreadsList()
+			setStatus(("Scanned %d threads from registry."):format(#threadsList))
+		end)
 	end
 
 	-- Tab 4: Bytecode Disassembler Logic
@@ -1187,7 +1661,11 @@ local function main()
 			flattenTree()
 			updateExplorerView()
 		elseif tabName == "Threads" then
-			refreshThreadsList()
+			if #threadsList == 0 and not threadScanning then
+				refreshThreadsList()
+			else
+				renderThreadsList()
+			end
 		elseif tabName == "Disassembler" then
 			updateDisassemblyView()
 		end
@@ -1287,7 +1765,7 @@ local function main()
 			BackgroundColor3 = Settings.Theme.TextBox,
 			BorderSizePixel = 0,
 			Position = UDim2.new(0, 3, 0, 3),
-			Size = UDim2.new(1, -6, 0, 20),
+			Size = UDim2.new(1, -116, 0, 20),
 			Parent = explorerPage
 		})
 		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = searchFrame})
@@ -1298,7 +1776,7 @@ local function main()
 			ClearTextOnFocus = false,
 			Font = Enum.Font.SourceSans,
 			PlaceholderColor3 = Settings.Theme.PlaceholderText,
-			PlaceholderText = "Search fields / keys...",
+			PlaceholderText = "Filter expanded keys / values...",
 			Position = UDim2.new(0, 4, 0, 0),
 			Size = UDim2.new(1, -8, 0, 20),
 			Text = "",
@@ -1315,6 +1793,40 @@ local function main()
 		end)
 		searchBox.Focused:Connect(function() searchStroke.Color = Settings.Theme.Highlight end)
 		searchBox.FocusLost:Connect(function() searchStroke.Color = Settings.Theme.Outline3 end)
+
+		local refreshBtn = createSimple("TextButton", {
+			Name = "RefreshExplorer",
+			BackgroundColor3 = Settings.Theme.Button,
+			BorderSizePixel = 0,
+			Font = Enum.Font.SourceSans,
+			Position = UDim2.new(1, -109, 0, 3),
+			Size = UDim2.new(0, 52, 0, 20),
+			Text = "Refresh",
+			TextColor3 = Settings.Theme.Text,
+			TextSize = 12,
+			Parent = explorerPage
+		})
+		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = refreshBtn})
+		refreshBtn.MouseButton1Click:Connect(function()
+			refreshExplorerTree()
+		end)
+
+		local collapseBtn = createSimple("TextButton", {
+			Name = "CollapseExplorer",
+			BackgroundColor3 = Settings.Theme.Button,
+			BorderSizePixel = 0,
+			Font = Enum.Font.SourceSans,
+			Position = UDim2.new(1, -55, 0, 3),
+			Size = UDim2.new(0, 52, 0, 20),
+			Text = "Collapse",
+			TextColor3 = Settings.Theme.Text,
+			TextSize = 12,
+			Parent = explorerPage
+		})
+		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = collapseBtn})
+		collapseBtn.MouseButton1Click:Connect(function()
+			collapseExplorerTree()
+		end)
 
 		listFrame = createSimple("Frame", {
 			Name = "List",
@@ -1452,29 +1964,60 @@ local function main()
 			Name = "ThreadHeader",
 			BackgroundColor3 = Settings.Theme.Main2,
 			BorderSizePixel = 0,
-			Size = UDim2.new(1, 0, 0, 24),
+			Size = UDim2.new(1, 0, 0, 30),
 			Parent = threadsPage
 		})
 		createSimple("TextLabel", {
 			BackgroundTransparency = 1,
 			Font = Enum.Font.SourceSansBold,
 			Position = UDim2.new(0, 5, 0, 0),
-			Size = UDim2.new(1, -10, 1, 0),
-			Text = "Active Coroutine Threads",
+			Size = UDim2.new(0, 118, 1, 0),
+			Text = "Threads",
 			TextColor3 = Settings.Theme.Text,
 			TextSize = 13,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			Parent = threadHeader
 		})
 
+		local threadSearchFrame = createSimple("Frame", {
+			Name = "ThreadSearchFrame",
+			BackgroundColor3 = Settings.Theme.TextBox,
+			BorderSizePixel = 0,
+			Position = UDim2.new(0, 86, 0, 5),
+			Size = UDim2.new(1, -224, 0, 20),
+			Parent = threadHeader
+		})
+		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = threadSearchFrame})
+		createSimple("UIStroke", {Color = Settings.Theme.Outline3, Thickness = 1.2, Parent = threadSearchFrame})
+		threadSearchBox = createSimple("TextBox", {
+			Name = "ThreadSearch",
+			BackgroundTransparency = 1,
+			ClearTextOnFocus = false,
+			Font = Enum.Font.SourceSans,
+			PlaceholderColor3 = Settings.Theme.PlaceholderText,
+			PlaceholderText = "Filter status / id...",
+			Position = UDim2.new(0, 4, 0, 0),
+			Size = UDim2.new(1, -8, 1, 0),
+			Text = "",
+			TextColor3 = Settings.Theme.Text,
+			TextSize = 13,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Parent = threadSearchFrame
+		})
+		Lib.ViewportTextBox.convert(threadSearchBox)
+		threadSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+			threadFilter = threadSearchBox.Text or ""
+			renderThreadsList()
+		end)
+
 		local threadRefreshBtn = createSimple("TextButton", {
 			Name = "RefreshThreads",
 			BackgroundColor3 = Settings.Theme.Button,
 			BorderSizePixel = 0,
-			Position = UDim2.new(1, -64, 0, 2),
-			Size = UDim2.new(0, 60, 1, -4),
+			Position = UDim2.new(1, -134, 0, 5),
+			Size = UDim2.new(0, 62, 0, 20),
 			Font = Enum.Font.SourceSans,
-			Text = "Scan GC",
+			Text = "Scan",
 			TextColor3 = Settings.Theme.Text,
 			TextSize = 12,
 			Parent = threadHeader
@@ -1482,60 +2025,68 @@ local function main()
 		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = threadRefreshBtn})
 		threadRefreshBtn.MouseButton1Click:Connect(refreshThreadsList)
 
+		local threadCopyBtn = createSimple("TextButton", {
+			Name = "CopyThreadStack",
+			BackgroundColor3 = Settings.Theme.Button,
+			BorderSizePixel = 0,
+			Position = UDim2.new(1, -68, 0, 5),
+			Size = UDim2.new(0, 64, 0, 20),
+			Font = Enum.Font.SourceSans,
+			Text = "Copy Stack",
+			TextColor3 = Settings.Theme.Text,
+			TextSize = 12,
+			Parent = threadHeader
+		})
+		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = threadCopyBtn})
+		threadCopyBtn.MouseButton1Click:Connect(function()
+			if selectedThread then
+				pcall(setclipboard or writeclipboard, getThreadStack(selectedThread))
+			end
+		end)
+
 		threadListFrame = createSimple("Frame", {
 			Name = "ThreadList",
 			BackgroundTransparency = 1,
-			Position = UDim2.new(0, 4, 0, 28),
-			Size = UDim2.new(1, -24, 0.45, -28),
+			Position = UDim2.new(0, 4, 0, 34),
+			Size = UDim2.new(1, -24, 0.45, -34),
 			ClipsDescendants = true,
 			Parent = threadsPage
 		})
 
 		threadScroll = Lib.ScrollBar.new()
 		threadScroll.WheelIncrement = 2
-		threadScroll.Gui.Position = UDim2.new(1, -16, 0, 28)
-		threadScroll.Gui.Size = UDim2.new(0, 16, 0.45, -28)
+		threadScroll.Gui.Position = UDim2.new(1, -16, 0, 34)
+		threadScroll.Gui.Size = UDim2.new(0, 16, 0.45, -34)
 		threadScroll:SetScrollFrame(threadListFrame)
 		threadScroll.Gui.Parent = threadsPage
-		threadScroll.Scrolled:Connect(refreshThreadsList)
+		threadScroll.Scrolled:Connect(renderThreadsList)
 
 		-- Details Box for Call Stack
-		local stackBox = createSimple("ScrollingFrame", {
+		threadStackBox = createSimple("ScrollingFrame", {
 			Name = "StackBox",
 			BackgroundColor3 = Settings.Theme.TextBox,
 			BorderSizePixel = 0,
 			Position = UDim2.new(0, 4, 0.45, 4),
 			Size = UDim2.new(1, -8, 0.55, -8),
-			CanvasSize = UDim2.new(0, 0, 2, 0),
+			CanvasSize = UDim2.new(0, 0, 0, 0),
+			ScrollBarThickness = 6,
 			Parent = threadsPage
 		})
-		createSimple("UICorner", {CornerRadius = UDim.new(0, 4), Parent = stackBox})
-		createSimple("UIStroke", {Color = Settings.Theme.Outline1, Parent = stackBox})
+		createSimple("UICorner", {CornerRadius = UDim.new(0, 4), Parent = threadStackBox})
+		createSimple("UIStroke", {Color = Settings.Theme.Outline1, Parent = threadStackBox})
 
-		local stackText = createSimple("TextLabel", {
+		threadStackText = createSimple("TextLabel", {
 			BackgroundTransparency = 1,
 			Font = Enum.Font.Code,
 			Position = UDim2.new(0, 5, 0, 5),
-			Size = UDim2.new(1, -10, 1, -10),
+			Size = UDim2.new(1, -10, 0, 100),
 			Text = "Select a thread to view its traceback.",
 			TextColor3 = Color3.fromRGB(220, 220, 220),
 			TextSize = 13,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Top,
-			Parent = stackBox
+			Parent = threadStackBox
 		})
-
-		-- page thread click listener updates details text
-		threadListFrame.ChildAdded:Connect(function()
-			task.spawn(function()
-				while threadsPage.Visible do
-					if selectedThread then
-						stackText.Text = selectedThread.Stack
-					end
-					task.wait(0.2)
-				end
-			end)
-		end)
 
 		-- Page 3: Disassembler Page
 		local disPage = createSimple("Frame", {
@@ -1588,7 +2139,7 @@ local function main()
 				if currentTab == "Globals" or currentTab == "Registry" then
 					updateExplorerView()
 				elseif currentTab == "Threads" then
-					refreshThreadsList()
+					renderThreadsList()
 				elseif currentTab == "Disassembler" then
 					updateDisassemblyView()
 				end
