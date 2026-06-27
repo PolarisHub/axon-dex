@@ -1270,6 +1270,23 @@ local function main()
 		return nil
 	end
 
+	local function getInstancePathText(obj, maxLen)
+		if typeof(obj) ~= "Instance" then return safeToString(obj, maxLen) end
+		local ok, path = pcall(function()
+			if Explorer and Explorer.GetInstancePath then
+				return Explorer.GetInstancePath(obj)
+			end
+			return obj:GetFullName()
+		end)
+		if ok and path then
+			return safeToString(path, maxLen)
+		end
+		local okName, fullName = pcall(function()
+			return obj:GetFullName()
+		end)
+		return safeToString(okName and fullName or obj, maxLen)
+	end
+
 	local function parseThreadTraceback(stack)
 		if type(stack) ~= "string" then return nil, nil end
 		for lineText in stack:gmatch("[^\n]+") do
@@ -1343,7 +1360,7 @@ local function main()
 		local location = getThreadLocation(tData)
 		local source = "unknown source"
 		if isScriptLike(location.Script) then
-			source = safeToString(location.Script:GetFullName(), 180)
+			source = getInstancePathText(location.Script, 180)
 		elseif location.Source then
 			source = safeToString(location.Source, 180)
 		end
@@ -1392,8 +1409,11 @@ local function main()
 		local source = normalizeSourceText(info.source or info.short_src)
 		local scriptPath
 		if isScriptLike(scriptObj) then
-			scriptPath = safeToString(scriptObj:GetFullName(), 260)
-			source = source or normalizeSourceText(scriptPath)
+			scriptPath = getInstancePathText(scriptObj, 260)
+			local okFullName, fullName = pcall(function()
+				return scriptObj:GetFullName()
+			end)
+			source = source or normalizeSourceText(okFullName and fullName or scriptPath)
 		end
 		return {
 			Func = func,
@@ -1544,32 +1564,94 @@ local function main()
 		if renderThreadsList then renderThreadsList() end
 	end
 
+	local function addScriptCandidate(candidates, seen, obj)
+		if isScriptLike(obj) and not seen[obj] then
+			seen[obj] = true
+			candidates[#candidates + 1] = obj
+		end
+	end
+
+	local function addScriptCandidateTree(candidates, seen, root)
+		if typeof(root) ~= "Instance" or seen[root] then return end
+		addScriptCandidate(candidates, seen, root)
+		local ok, descendants = pcall(function()
+			return root:GetDescendants()
+		end)
+		if ok and descendants then
+			for i = 1, #descendants do
+				addScriptCandidate(candidates, seen, descendants[i])
+				if i % 500 == 0 then
+					task.wait()
+				end
+			end
+		end
+	end
+
+	local function collectScriptCandidates()
+		local candidates = {}
+		local seen = {}
+
+		addScriptCandidateTree(candidates, seen, game)
+		if oldgame ~= game then
+			addScriptCandidateTree(candidates, seen, oldgame)
+		end
+
+		if env and env.getnilinstances then
+			local ok, nilInstances = pcall(env.getnilinstances)
+			if ok and nilInstances then
+				for i = 1, #nilInstances do
+					addScriptCandidateTree(candidates, seen, nilInstances[i])
+					if i % 100 == 0 then
+						task.wait()
+					end
+				end
+			end
+		end
+
+		if env and env.getloadedmodules then
+			local ok, modules = pcall(env.getloadedmodules)
+			if ok and modules then
+				for i = 1, #modules do
+					addScriptCandidate(candidates, seen, modules[i])
+				end
+			end
+		end
+
+		if env and env.getgc then
+			local ok, gc = pcall(env.getgc)
+			if ok and gc then
+				for i = 1, #gc do
+					local value = gc[i]
+					if typeof(value) == "function" then
+						local scriptObj = getScriptFromFunction(value)
+						addScriptCandidate(candidates, seen, scriptObj)
+					end
+					if i % 1000 == 0 then
+						task.wait()
+					end
+				end
+			end
+		end
+
+		return candidates
+	end
+
 	local function findScriptBySource(source)
 		source = normalizeSourceText(source)
 		if not source then return nil end
 
-		local roots = {game, oldgame}
-		local seenRoots = {}
-		for _, root in ipairs(roots) do
-			if typeof(root) == "Instance" and not seenRoots[root] then
-				seenRoots[root] = true
-				local ok, descendants = pcall(function()
-					return root:GetDescendants()
-				end)
-				if ok and descendants then
-					for i = 1, #descendants do
-						local obj = descendants[i]
-						if isScriptLike(obj) then
-							local fullName = safeToString(obj:GetFullName(), 260)
-							if fullName == source or ("game." .. fullName) == source or fullName:sub(-#source) == source then
-								return obj
-							end
-						end
-						if i % 500 == 0 then
-							task.wait()
-						end
-					end
-				end
+		local candidates = collectScriptCandidates()
+		for i = 1, #candidates do
+			local obj = candidates[i]
+			local okFullName, fullName = pcall(function()
+				return obj:GetFullName()
+			end)
+			fullName = okFullName and fullName or nil
+			local pathText = getInstancePathText(obj, 260)
+			local name = safeToString(obj.Name, 120)
+
+			if sourceTextMatches(source, fullName) or sourceTextMatches(source, pathText) or source == name then
+				return obj
 			end
 		end
 		return nil

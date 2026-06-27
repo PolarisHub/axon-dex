@@ -47,11 +47,13 @@ elseif game:GetService("RunService"):IsStudio() then
 end
 
 local function getPath(obj)
-	if obj.Parent == nil then
-		return "Nil parented"
-	else
+	if obj and (obj.Parent ~= nil or env.getnilinstances) then
 		return Explorer.GetInstancePath(obj)
 	end
+	if obj and obj.Parent == nil then
+		return "Nil parented"
+	end
+	return tostring(obj)
 end
 
 local function main()
