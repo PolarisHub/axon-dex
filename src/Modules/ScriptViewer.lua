@@ -39,11 +39,11 @@ local executorName = "Unknown"
 local executorVersion = "???"
 if identifyexecutor then
 	local name,ver = identifyexecutor()
-	executorName = name
-	executorVersion = ver
+	executorName = tostring(name or executorName)
+	executorVersion = tostring(ver or executorVersion)
 elseif game:GetService("RunService"):IsStudio() then
 	executorName = "Studio"
-	executorVersion = version()
+	executorVersion = tostring(version() or executorVersion)
 end
 
 local function getPath(obj)
