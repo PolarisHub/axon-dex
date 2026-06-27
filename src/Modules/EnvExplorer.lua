@@ -57,7 +57,7 @@ local function main()
 	local MAX_TEXT_VALUE = 260
 
 	-- State
-	local window, currentTab
+	local window, currentTab, selectTab
 	local tabsFrame, contentFrame, statusBar, statusText
 	local listEntries = {}
 
@@ -79,7 +79,12 @@ local function main()
 	local threadRows = {}
 	local selectedThread
 	local threadScroll, threadListFrame, threadStackBox, threadStackText, threadSearchBox
+	local threadContext
 	local threadFilter = ""
+	local threadFilterLabel = ""
+	local threadPredicate
+	local threadTargetSet
+	local threadLocateToken = 0
 	local threadScanToken = 0
 	local threadScanning = false
 
@@ -833,7 +838,7 @@ local function main()
 		confirmBtn.Visible = editingVisible
 	end
 
-	local refreshExplorerTree, collapseExplorerTree, loadMoreChildren, openTextInScriptViewer, openFunctionSource
+	local refreshExplorerTree, collapseExplorerTree, loadMoreChildren, openTextInScriptViewer, openFunctionSource, locateThreadsForFunction, locateRunningThreads
 
 	EnvExplorer.NewEntry = function(index)
 		local entryGui = createSimple("TextButton", {
@@ -1142,6 +1147,22 @@ local function main()
 
 		if selectedNode.ValueType == "function" then
 			context:Add({
+				Name = "Locate Threads",
+				IconMap = Main.MiscIcons,
+				Icon = "Reference",
+				OnClick = function()
+					locateThreadsForFunction(selectedNode.Value, false)
+				end
+			})
+			context:Add({
+				Name = "Locate Running Threads",
+				IconMap = Main.MiscIcons,
+				Icon = "Play",
+				OnClick = function()
+					locateThreadsForFunction(selectedNode.Value, true)
+				end
+			})
+			context:Add({
 				Name = "Open Source Script",
 				IconMap = Main.MiscIcons,
 				Icon = "ViewScript",
@@ -1218,6 +1239,8 @@ local function main()
 	end
 
 	-- Tab 3: Threads Monitor Logic
+	local renderThreadsList, updateThreadStackView, refreshThreadsList
+
 	local function getThreadStatusColor(status)
 		if status == "running" then
 			return Color3.fromRGB(120, 210, 120)
@@ -1227,6 +1250,39 @@ local function main()
 			return Color3.fromRGB(170, 90, 90)
 		end
 		return Color3.fromRGB(150, 180, 220)
+	end
+
+	local function isScriptLike(obj)
+		if typeof(obj) ~= "Instance" then return false end
+		local ok, result = pcall(function()
+			return obj:IsA("LuaSourceContainer")
+		end)
+		if ok then return result end
+		return obj:IsA("LocalScript") or obj:IsA("ModuleScript") or obj:IsA("Script")
+	end
+
+	local function getScriptFromFunction(func)
+		if typeof(func) ~= "function" then return nil end
+		local _, scriptObj = getFunctionInfo(func)
+		if isScriptLike(scriptObj) then
+			return scriptObj
+		end
+		return nil
+	end
+
+	local function parseThreadTraceback(stack)
+		if type(stack) ~= "string" then return nil, nil end
+		for lineText in stack:gmatch("[^\n]+") do
+			local source, line = lineText:match("Script '([^']+)', Line (%d+)")
+			if source and line then
+				return source, tonumber(line)
+			end
+			source, line = lineText:match("^%s*(.-):(%d+):")
+			if source and source ~= "" and line then
+				return source, tonumber(line)
+			end
+		end
+		return nil, nil
 	end
 
 	local function getThreadStack(tData)
@@ -1242,13 +1298,406 @@ local function main()
 		return tData.Stack
 	end
 
-	local function updateThreadStackView()
+	local function getThreadLocation(tData)
+		if not tData then return {} end
+		if tData.Location then return tData.Location end
+
+		local location = {}
+		local debugInfo = debug and debug.info
+		if debugInfo then
+			for level = 0, 40 do
+				local ok, source, line, name, func = pcall(debugInfo, tData.Thread, level, "slnf")
+				if ok and (source ~= nil or line ~= nil or name ~= nil or func ~= nil) then
+					if not location.Source and type(source) == "string" and source ~= "" then
+						location.Source = source
+					end
+					if not location.Line and type(line) == "number" and line > 0 then
+						location.Line = line
+					end
+					if not location.Name and type(name) == "string" and name ~= "" then
+						location.Name = name
+					end
+					if not location.Script and typeof(func) == "function" then
+						location.Function = func
+						location.Script = getScriptFromFunction(func)
+					end
+					if location.Script and location.Line then
+						break
+					end
+				end
+			end
+		end
+
+		if not location.Source or not location.Line then
+			local source, line = parseThreadTraceback(getThreadStack(tData))
+			location.Source = location.Source or source
+			location.Line = location.Line or line
+		end
+
+		tData.Location = location
+		tData.SearchText = (tData.Name .. " " .. safeToString(tData.Status) .. " " .. safeToString(location.Source) .. " " .. safeToString(location.Line)):lower()
+		return location
+	end
+
+	local function getThreadLocationText(tData)
+		local location = getThreadLocation(tData)
+		local source = "unknown source"
+		if isScriptLike(location.Script) then
+			source = safeToString(location.Script:GetFullName(), 180)
+		elseif location.Source then
+			source = safeToString(location.Source, 180)
+		end
+		if location.Line then
+			return ("%s:%d"):format(source, location.Line)
+		end
+		return source
+	end
+
+	local function normalizeSourceText(source)
+		if type(source) ~= "string" then return nil end
+		source = source:gsub("^@", "")
+		source = source:gsub("^game%.", "")
+		source = source:gsub("^oldgame%.", "")
+		source = source:gsub("^Script '([^']+)'$", "%1")
+		source = source:gsub("^%s+", ""):gsub("%s+$", "")
+		if source == "" or source:find("^%[string") then return nil end
+		return source
+	end
+
+	local function sourceTextMatches(a, b)
+		a = normalizeSourceText(a)
+		b = normalizeSourceText(b)
+		if not a or not b then return false end
+		return a == b or a:sub(-#b) == b or b:sub(-#a) == a
+	end
+
+	local function lineInTargetRange(line, target)
+		line = tonumber(line)
+		if not line or line <= 0 then return false end
+		local firstLine = tonumber(target.Line)
+		local lastLine = tonumber(target.LastLine)
+		if not firstLine or firstLine <= 0 then return true end
+		if not lastLine or lastLine < firstLine then lastLine = firstLine end
+		return line >= firstLine and line <= lastLine
+	end
+
+	local function isRunningThreadStatus(status)
+		return status ~= "dead"
+	end
+
+	local function buildFunctionThreadTarget(func, label)
+		if typeof(func) ~= "function" then return nil end
+		local info, scriptObj = getFunctionInfo(func)
+		local name = label or getFunctionDisplayName(func)
+		local source = normalizeSourceText(info.source or info.short_src)
+		local scriptPath
+		if isScriptLike(scriptObj) then
+			scriptPath = safeToString(scriptObj:GetFullName(), 260)
+			source = source or normalizeSourceText(scriptPath)
+		end
+		return {
+			Func = func,
+			Name = name,
+			Script = scriptObj,
+			ScriptPath = scriptPath,
+			Source = source,
+			Line = tonumber(info.linedefined),
+			LastLine = tonumber(info.lastlinedefined)
+		}
+	end
+
+	local function threadMatchesFunction(tData, target, runningOnly)
+		if not tData or not target then return false end
+		if runningOnly and not isRunningThreadStatus(tData.Status) then return false end
+
+		local debugInfo = debug and debug.info
+		if debugInfo then
+			for level = 0, 60 do
+				local ok, source, line, name, func = pcall(debugInfo, tData.Thread, level, "slnf")
+				if not ok then break end
+				if source == nil and line == nil and name == nil and func == nil then break end
+				if func == target.Func then
+					return true
+				end
+				if typeof(func) == "function" then
+					local scriptObj = getScriptFromFunction(func)
+					if target.Script and scriptObj == target.Script and lineInTargetRange(line, target) then
+						return true
+					end
+				end
+				if lineInTargetRange(line, target) then
+					if target.ScriptPath and sourceTextMatches(source, target.ScriptPath) then
+						return true
+					end
+					if target.Source and sourceTextMatches(source, target.Source) then
+						return true
+					end
+				end
+			end
+		end
+
+		local location = getThreadLocation(tData)
+		if lineInTargetRange(location.Line, target) then
+			if target.Script and location.Script == target.Script then
+				return true
+			end
+			if target.ScriptPath and sourceTextMatches(location.Source, target.ScriptPath) then
+				return true
+			end
+			if target.Source and sourceTextMatches(location.Source, target.Source) then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function clearThreadTargetFilter()
+		threadPredicate = nil
+		threadTargetSet = nil
+		threadFilterLabel = ""
+		threadLocateToken = threadLocateToken + 1
+		if threadSearchBox then
+			threadSearchBox.PlaceholderText = "Filter status / id..."
+		end
+	end
+
+	local function applyThreadTargetFilter(label, targetSet)
+		threadFilterLabel = label or ""
+		threadTargetSet = targetSet
+		threadPredicate = targetSet and function(tData)
+			return targetSet[tData.Thread] == true
+		end or nil
+		threadFilter = ""
+		if threadSearchBox then
+			threadSearchBox.PlaceholderText = threadFilterLabel ~= "" and threadFilterLabel or "Filter status / id..."
+			if threadSearchBox.Text ~= "" then
+				threadSearchBox.Text = ""
+			end
+		end
+		if EnvExplorer.Window then
+			EnvExplorer.Window:Show()
+		end
+		if selectTab then
+			selectTab("Threads")
+		end
+		if renderThreadsList then
+			renderThreadsList()
+		end
+	end
+
+	function locateThreadsForFunction(func, runningOnly)
+		local target = buildFunctionThreadTarget(func)
+		if not target then return end
+
+		threadLocateToken = threadLocateToken + 1
+		local locateToken = threadLocateToken
+		local targetSet = {}
+		local label = ("%s: %s"):format(runningOnly and "Running threads" or "Threads", target.Name)
+		selectedThread = nil
+		applyThreadTargetFilter(label, targetSet)
+		setStatus("Locating " .. label .. "...")
+
+		if #threadsList == 0 and not threadScanning then
+			refreshThreadsList()
+		end
+
+		task.spawn(function()
+			while threadScanning do
+				if locateToken ~= threadLocateToken then return end
+				task.wait(0.05)
+			end
+
+			local matches = 0
+			selectedThread = nil
+			for i = 1, #threadsList do
+				if locateToken ~= threadLocateToken then return end
+				local tData = threadsList[i]
+				if threadMatchesFunction(tData, target, runningOnly) then
+					targetSet[tData.Thread] = true
+					matches = matches + 1
+					selectedThread = selectedThread or tData
+				end
+				if i % 12 == 0 then
+					setStatus(("Locating %s... %d/%d (%d matches)"):format(target.Name, i, #threadsList, matches))
+					if renderThreadsList then renderThreadsList() end
+					task.wait()
+				end
+			end
+
+			if locateToken ~= threadLocateToken then return end
+			if renderThreadsList then renderThreadsList() end
+			setStatus(("Located %d %s for %s."):format(matches, runningOnly and "running threads" or "threads", target.Name))
+		end)
+	end
+
+	function locateRunningThreads()
+		threadLocateToken = threadLocateToken + 1
+		local targetSet = {}
+		selectedThread = nil
+		applyThreadTargetFilter("Running threads", targetSet)
+		for i = 1, #threadsList do
+			local tData = threadsList[i]
+			if isRunningThreadStatus(tData.Status) then
+				targetSet[tData.Thread] = true
+			end
+		end
+		if renderThreadsList then renderThreadsList() end
+	end
+
+	local function findScriptBySource(source)
+		source = normalizeSourceText(source)
+		if not source then return nil end
+
+		local roots = {game, oldgame}
+		local seenRoots = {}
+		for _, root in ipairs(roots) do
+			if typeof(root) == "Instance" and not seenRoots[root] then
+				seenRoots[root] = true
+				local ok, descendants = pcall(function()
+					return root:GetDescendants()
+				end)
+				if ok and descendants then
+					for i = 1, #descendants do
+						local obj = descendants[i]
+						if isScriptLike(obj) then
+							local fullName = safeToString(obj:GetFullName(), 260)
+							if fullName == source or ("game." .. fullName) == source or fullName:sub(-#source) == source then
+								return obj
+							end
+						end
+						if i % 500 == 0 then
+							task.wait()
+						end
+					end
+				end
+			end
+		end
+		return nil
+	end
+
+	local function openThreadScriptAtLine(tData)
+		if not tData then return end
+		task.spawn(function()
+			setStatus("Resolving thread script...")
+			local location = getThreadLocation(tData)
+			local scriptObj = location.Script
+			if not isScriptLike(scriptObj) and location.Source then
+				scriptObj = findScriptBySource(location.Source)
+				location.Script = scriptObj
+			end
+
+			if isScriptLike(scriptObj) and ScriptViewer and ScriptViewer.ViewScript then
+				local line = tonumber(location.Line) or 1
+				if ScriptViewer.codeFrame and ScriptViewer.codeFrame.OwnerScript == scriptObj and ScriptViewer.Window then
+					local targetLine = math.max(line - 1, 0)
+					ScriptViewer.Window:Show()
+					if ScriptViewer.codeFrame.ScrollToLineCentred then
+						ScriptViewer.codeFrame:ScrollToLineCentred(targetLine)
+					elseif ScriptViewer.codeFrame.ScrollV then
+						ScriptViewer.codeFrame.ScrollV:ScrollTo(targetLine)
+					end
+					if ScriptViewer.codeFrame.MoveCursor then
+						ScriptViewer.codeFrame:MoveCursor(0, targetLine)
+					end
+				else
+					ScriptViewer.ViewScript(scriptObj, line)
+				end
+				setStatus(("Opening %s:%d"):format(safeToString(scriptObj.Name, 80), line))
+			else
+				openTextInScriptViewer(("-- Unable to resolve script for thread.\n-- Location: %s\n\n%s"):format(getThreadLocationText(tData), getThreadStack(tData)))
+				warn("[EnvExplorer] Could not resolve a script instance for this thread.")
+			end
+		end)
+	end
+
+	local function closeThread(tData)
+		if not tData then return end
+		local thread = tData.Thread
+		if thread == coroutine.running() then
+			warn("[EnvExplorer] Refusing to close the currently running thread.")
+			return
+		end
+
+		local ok, err = false, "No supported close/cancel function"
+		if task and task.cancel then
+			ok, err = pcall(task.cancel, thread)
+		end
+		if not ok and coroutine.close then
+			ok, err = pcall(coroutine.close, thread)
+		end
+
+		if ok then
+			local okStatus, status = pcall(coroutine.status, thread)
+			tData.Status = okStatus and status or "closed"
+			tData.Stack = "Thread closed/cancelled."
+			tData.SearchText = (tData.Name .. " " .. tData.Status):lower()
+			setStatus("Closed thread: " .. tData.Name)
+			if renderThreadsList then renderThreadsList() end
+		else
+			warn("[EnvExplorer] Failed to close thread: " .. safeToString(err, 180))
+			setStatus("Failed to close selected thread.")
+		end
+	end
+
+	local function showThreadContextMenu(tData, x, y)
+		if not tData then return end
+		selectedThread = tData
+		updateThreadStackView()
+		if renderThreadsList then renderThreadsList() end
+
+		if not threadContext then
+			threadContext = Lib.ContextMenu.new()
+		end
+		threadContext:Clear()
+		threadContext:Add({
+			Name = "Decompile + Go to Line",
+			IconMap = Main.MiscIcons,
+			Icon = "ViewScript",
+			OnClick = function()
+				openThreadScriptAtLine(tData)
+			end
+		})
+		threadContext:Add({
+			Name = "Copy Stack",
+			IconMap = Main.MiscIcons,
+			Icon = "Copy",
+			OnClick = function()
+				pcall(setclipboard or writeclipboard, getThreadStack(tData))
+			end
+		})
+		threadContext:Add({
+			Name = "Copy Location",
+			IconMap = Main.MiscIcons,
+			Icon = "Reference",
+			OnClick = function()
+				pcall(setclipboard or writeclipboard, getThreadLocationText(tData))
+			end
+		})
+		threadContext:Add({
+			Name = "Close Thread",
+			IconMap = Main.MiscIcons,
+			Icon = "Delete",
+			OnClick = function()
+				closeThread(tData)
+			end
+		})
+		local mouse = Main.Mouse
+		threadContext:Show(x or mouse.X, y or mouse.Y)
+	end
+
+	function updateThreadStackView()
 		if not threadStackText then return end
-		threadStackText.Text = getThreadStack(selectedThread)
+		if selectedThread then
+			threadStackText.Text = ("-- Location: %s\n-- Status: %s\n\n%s"):format(getThreadLocationText(selectedThread), safeToString(selectedThread.Status), getThreadStack(selectedThread))
+		else
+			threadStackText.Text = getThreadStack(selectedThread)
+		end
 		if selectedThread then
 			setStatus("Thread Stack: " .. selectedThread.Name)
 		elseif threadScanning then
 			setStatus("Scanning registry for threads...")
+		elseif threadFilterLabel ~= "" then
+			setStatus(("Showing %d/%d threads | %s"):format(#threadView, #threadsList, threadFilterLabel))
 		else
 			setStatus(("Scanned %d threads."):format(#threadsList))
 		end
@@ -1266,15 +1715,18 @@ local function main()
 	local function rebuildThreadView()
 		table.clear(threadView)
 		local filter = threadFilter:lower()
+		local predicate = threadPredicate
 		for i = 1, #threadsList do
 			local tData = threadsList[i]
-			if filter == "" or tData.SearchText:find(filter, 1, true) then
+			local passesText = filter == "" or tData.SearchText:find(filter, 1, true)
+			local passesTarget = not predicate or predicate(tData)
+			if passesText and passesTarget then
 				threadView[#threadView + 1] = tData
 			end
 		end
 	end
 
-	local function renderThreadsList()
+	function renderThreadsList()
 		if not threadScroll or not threadListFrame then return end
 		rebuildThreadView()
 
@@ -1340,12 +1792,19 @@ local function main()
 						renderThreadsList()
 					end
 				end)
+				rowFrame.MouseButton2Click:Connect(function(x, y)
+					local viewIndex = rowFrame:GetAttribute("ThreadIndex")
+					local activeT = viewIndex and threadView[viewIndex]
+					if activeT then
+						showThreadContextMenu(activeT, x, y)
+					end
+				end)
 				threadRows[i] = rowFrame
 			end
 
 			if tData then
 				rowFrame:SetAttribute("ThreadIndex", idx)
-				rowFrame.NameLabel.Text = tData.Name
+				rowFrame.NameLabel.Text = tData.Location and (tData.Name .. "  @ " .. getThreadLocationText(tData)) or tData.Name
 				rowFrame.StatusLabel.Text = tData.Status
 				rowFrame.StatusLabel.TextColor3 = getThreadStatusColor(tData.Status)
 				if tData == selectedThread then
@@ -1370,7 +1829,7 @@ local function main()
 		updateThreadStackView()
 	end
 
-	local function refreshThreadsList()
+	function refreshThreadsList()
 		threadScanToken = threadScanToken + 1
 		local scanToken = threadScanToken
 		threadScanning = true
@@ -1637,7 +2096,7 @@ local function main()
 	end
 
 	-- Window / Tabs UI Setup
-	local function selectTab(tabName)
+	function selectTab(tabName)
 		currentTab = tabName
 		for _, child in next, tabsFrame:GetChildren() do
 			if child:IsA("TextButton") then
@@ -2023,7 +2482,10 @@ local function main()
 			Parent = threadHeader
 		})
 		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = threadRefreshBtn})
-		threadRefreshBtn.MouseButton1Click:Connect(refreshThreadsList)
+		threadRefreshBtn.MouseButton1Click:Connect(function()
+			clearThreadTargetFilter()
+			refreshThreadsList()
+		end)
 
 		local threadCopyBtn = createSimple("TextButton", {
 			Name = "CopyThreadStack",
@@ -2061,13 +2523,74 @@ local function main()
 		threadScroll.Gui.Parent = threadsPage
 		threadScroll.Scrolled:Connect(renderThreadsList)
 
+		local threadActionFrame = createSimple("Frame", {
+			Name = "ThreadActions",
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, 4, 0.45, 4),
+			Size = UDim2.new(1, -8, 0, 24),
+			Parent = threadsPage
+		})
+
+		local openThreadBtn = createSimple("TextButton", {
+			Name = "OpenThreadLine",
+			BackgroundColor3 = Settings.Theme.Button,
+			BorderSizePixel = 0,
+			Font = Enum.Font.SourceSans,
+			Position = UDim2.new(0, 0, 0, 1),
+			Size = UDim2.new(0.45, -3, 1, -2),
+			Text = "Decompile @ Line",
+			TextColor3 = Settings.Theme.Text,
+			TextSize = 12,
+			Parent = threadActionFrame
+		})
+		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = openThreadBtn})
+		openThreadBtn.MouseButton1Click:Connect(function()
+			openThreadScriptAtLine(selectedThread)
+		end)
+
+		local copyThreadLocationBtn = createSimple("TextButton", {
+			Name = "CopyThreadLocation",
+			BackgroundColor3 = Settings.Theme.Button,
+			BorderSizePixel = 0,
+			Font = Enum.Font.SourceSans,
+			Position = UDim2.new(0.45, 3, 0, 1),
+			Size = UDim2.new(0.27, -4, 1, -2),
+			Text = "Copy Loc",
+			TextColor3 = Settings.Theme.Text,
+			TextSize = 12,
+			Parent = threadActionFrame
+		})
+		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = copyThreadLocationBtn})
+		copyThreadLocationBtn.MouseButton1Click:Connect(function()
+			if selectedThread then
+				pcall(setclipboard or writeclipboard, getThreadLocationText(selectedThread))
+			end
+		end)
+
+		local closeThreadBtn = createSimple("TextButton", {
+			Name = "CloseThread",
+			BackgroundColor3 = Color3.fromRGB(105, 45, 45),
+			BorderSizePixel = 0,
+			Font = Enum.Font.SourceSansBold,
+			Position = UDim2.new(0.72, 3, 0, 1),
+			Size = UDim2.new(0.28, -3, 1, -2),
+			Text = "Close Thread",
+			TextColor3 = Settings.Theme.Text,
+			TextSize = 12,
+			Parent = threadActionFrame
+		})
+		createSimple("UICorner", {CornerRadius = UDim.new(0, 2), Parent = closeThreadBtn})
+		closeThreadBtn.MouseButton1Click:Connect(function()
+			closeThread(selectedThread)
+		end)
+
 		-- Details Box for Call Stack
 		threadStackBox = createSimple("ScrollingFrame", {
 			Name = "StackBox",
 			BackgroundColor3 = Settings.Theme.TextBox,
 			BorderSizePixel = 0,
-			Position = UDim2.new(0, 4, 0.45, 4),
-			Size = UDim2.new(1, -8, 0.55, -8),
+			Position = UDim2.new(0, 4, 0.45, 32),
+			Size = UDim2.new(1, -8, 0.55, -36),
 			CanvasSize = UDim2.new(0, 0, 0, 0),
 			ScrollBarThickness = 6,
 			Parent = threadsPage

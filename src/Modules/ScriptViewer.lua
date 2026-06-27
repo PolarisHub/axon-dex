@@ -331,8 +331,14 @@ local function main()
 			codeFrame:SetText(source)
 			if lineIndex then
 				task.defer(function()
-					if codeFrame.ScrollV then
-						codeFrame.ScrollV:ScrollTo(lineIndex)
+					local targetLine = math.max((tonumber(lineIndex) or 1) - 1, 0)
+					if codeFrame.ScrollToLineCentred then
+						codeFrame:ScrollToLineCentred(targetLine)
+					elseif codeFrame.ScrollV then
+						codeFrame.ScrollV:ScrollTo(targetLine)
+					end
+					if codeFrame.MoveCursor then
+						codeFrame:MoveCursor(0, targetLine)
 					end
 				end)
 			end
