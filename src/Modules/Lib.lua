@@ -4420,7 +4420,7 @@ local function main()
 				end
 			end
 
-			if #refLines > 0 then
+			if not Apps.DecompilerHelper and #refLines > 0 then
 				local refsMenu = Lib.ContextMenu.new()
 				for i = 1, math.min(#refLines, 15) do
 					local item = refLines[i]
@@ -4856,6 +4856,32 @@ local function main()
 		end
 
 		funcs.JumpToCursor = function(self)
+			self:Refresh()
+		end
+
+		funcs.ScrollToLineCentred = function(self, lineY)
+			-- lineY is 0-indexed (same as CursorY)
+			local linesFrame = self.GuiElems.LinesFrame
+			local vSize = math.max(1, linesFrame.AbsoluteSize.Y)
+			local maxVisibleLines = math.floor(vSize / self.FontSize)
+			local halfVisible = math.floor(maxVisibleLines / 2)
+
+			-- Compute scroll target so lineY sits in the middle of the viewport
+			local scrollTarget = math.max(0, lineY - halfVisible)
+			local totalLines = #self.Lines
+			local maxScroll = math.max(0, totalLines - maxVisibleLines)
+			scrollTarget = math.min(scrollTarget, maxScroll)
+
+			-- Update ViewY and scroll bar
+			self.ViewY = scrollTarget
+			if self.ScrollV then
+				self.ScrollV:ScrollTo(scrollTarget, true)
+			end
+
+			-- Move cursor to that line
+			self.CursorX = 0
+			self.CursorY = lineY
+			self:UpdateCursor()
 			self:Refresh()
 		end
 

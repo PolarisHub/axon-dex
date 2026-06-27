@@ -1209,7 +1209,7 @@ local function main()
 					local targetIdx = i + xrefScroll.Index
 					local xref = xrefList[targetIdx]
 					if xref and activeCodeFrame then
-						activeCodeFrame:MoveCursor(0, xref.Line - 1)
+						activeCodeFrame:ScrollToLineCentred(xref.Line - 1)
 					end
 				end)
 			end
@@ -1791,6 +1791,9 @@ local function main()
 
 	DecompilerHelper.Toggle = function(visible)
 		DecompilerHelper.Active = visible
+		if not sidePanel then
+			DecompilerHelper.Init()
+		end
 		if not sidePanel then return end
 
 		sidePanel.Visible = visible
