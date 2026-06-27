@@ -226,6 +226,14 @@ local function main()
 		return getEditableType(node) ~= nil
 	end
 
+	local function formatNodeValue(node)
+		local valueText = formatValue(node.Value, node.ValueType)
+		if getEditableType(node) then
+			return "= " .. valueText
+		end
+		return valueText
+	end
+
 	local function parseNumberList(text, expected)
 		local values = {}
 		for piece in tostring(text):gmatch("[^,]+") do
@@ -1188,7 +1196,7 @@ local function main()
 			FunctionDumper.UpdateView()
 			FunctionDumper.Refresh()
 			if statusLabel then
-				statusLabel.Text = ("Edited %s -> <%s> %s"):format(editableType, typeof(newValue), formatValue(newValue, typeof(newValue)))
+				statusLabel.Text = ("Edited %s value = <%s> %s"):format(editableType, typeof(newValue), formatValue(newValue, typeof(newValue)))
 			end
 			return true
 		end
@@ -1344,7 +1352,8 @@ local function main()
 		editBox.Text = valueToEditText(node.Value, node.ValueType)
 		editBox.PlaceholderText = getEditPlaceholder(node.ValueType)
 		if statusLabel then
-			statusLabel.Text = ("Editing <%s>. Press Enter/check to apply; use =expression for complex values."):format(node.ValueType)
+			local editableType = getEditableType(node) or "Value"
+			statusLabel.Text = ("Editing %s value. Current = <%s> %s. Press Enter/check to apply."):format(editableType, node.ValueType, formatValue(node.Value, node.ValueType))
 		end
 		local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
 		local xPos = node.Depth * INDENT + NAME_OFF + nameSize + 8
@@ -1379,6 +1388,7 @@ local function main()
 			if node then
 				local depth = node.Depth
 				local nodeFunc = getNodeFunction(node)
+				local editableType = getEditableType(node)
 				local blockEntry = nodeFunc and getFunctionBlockEntry(nodeFunc, false)
 				local isBlocked = blockEntry and blockEntry.Blocked
 				entry.Gui.Visible = true
@@ -1388,7 +1398,7 @@ local function main()
 				entry.Name.Text = node.Name
 
 				-- Format type indicators
-				if node.Type == "Function" then
+				if node.Type == "Function" and not editableType then
 					entry.Name.TextColor3 = isBlocked and Color3.fromRGB(255, 95, 95) or theme.Text
 					if isBlocked then
 						local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
@@ -1402,7 +1412,7 @@ local function main()
 						entry.Name.Size = UDim2.new(1, -(depth * INDENT + NAME_OFF) - 2, 1, 0)
 						entry.ValueLabel.Visible = false
 					end
-				elseif node.Type == "Upvalue" or node.Type == "Constant" or node.Type == "TableValue" or node.Type == "Metadata" then
+				elseif editableType or node.Type == "Metadata" then
 					entry.Name.TextColor3 = isBlocked and Color3.fromRGB(255, 95, 95) or Color3.fromRGB(150, 150, 150)
 					local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
 					entry.Name.Size = UDim2.new(0, nameSize + 4, 1, 0)
@@ -1410,10 +1420,10 @@ local function main()
 					entry.ValueLabel.Position = UDim2.new(0, depth * INDENT + NAME_OFF + nameSize + 8, 0, 0)
 					entry.ValueLabel.Size = UDim2.new(1, -(depth * INDENT + NAME_OFF + nameSize + 8) - 4, 1, 0)
 					if isBlocked then
-						entry.ValueLabel.Text = ("BLOCKED (%d) "):format(blockEntry.BlockedCalls or 0) .. formatValue(node.Value, node.ValueType)
+						entry.ValueLabel.Text = ("BLOCKED (%d) "):format(blockEntry.BlockedCalls or 0) .. formatNodeValue(node)
 						entry.ValueLabel.TextColor3 = Color3.fromRGB(255, 95, 95)
 					else
-						entry.ValueLabel.Text = formatValue(node.Value, node.ValueType)
+						entry.ValueLabel.Text = formatNodeValue(node)
 						entry.ValueLabel.TextColor3 = getTypeColor(node.ValueType)
 					end
 					entry.ValueLabel.Visible = true
@@ -1547,9 +1557,9 @@ local function main()
 		if isEditableNode(selectedNode) then
 			local labelName = "Edit Value"
 			local editableType = getEditableType(selectedNode)
-			if editableType == "Upvalue" then labelName = "Edit Upvalue"
-			elseif editableType == "Constant" then labelName = "Edit Constant"
-			elseif editableType == "TableValue" then labelName = "Edit Table Member"
+			if editableType == "Upvalue" then labelName = "Edit Upvalue Value"
+			elseif editableType == "Constant" then labelName = "Edit Constant Value"
+			elseif editableType == "TableValue" then labelName = "Edit Table Member Value"
 			end
 			context:Add({
 				Name = labelName,
@@ -1659,7 +1669,7 @@ local function main()
 
 			-- Double click to edit or expand
 			if button == 1 and combo == 2 then
-				if isEditableNode(node) and node.ValueType ~= "table" and node.ValueType ~= "function" then
+				if isEditableNode(node) then
 					FunctionDumper.SetEditingNode(node, ind)
 				else
 					node.Expanded = not node.Expanded
@@ -1785,7 +1795,8 @@ local function main()
 			if ok then
 				editBox.TextColor3 = Settings.Theme.Text
 				if statusLabel then
-					statusLabel.Text = ("Preview <%s>: %s"):format(typeof(valueOrErr), formatValue(valueOrErr, typeof(valueOrErr)))
+					local editableType = getEditableType(editingNode) or "Value"
+					statusLabel.Text = ("Preview %s value = <%s> %s"):format(editableType, typeof(valueOrErr), formatValue(valueOrErr, typeof(valueOrErr)))
 				end
 			else
 				editBox.TextColor3 = Color3.fromRGB(255, 120, 120)

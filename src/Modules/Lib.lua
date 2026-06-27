@@ -4107,7 +4107,10 @@ local function main()
 		local lineTweens = {}
 		local fontWidthCache = {}
 		local MAX_FIND_MATCHES = 20
-		local FIND_SCAN_BUDGET = 0.006
+		local FIND_SCAN_BUDGET = 0.0015
+		local FIND_SCAN_CHARS = 6000
+		local FIND_DEBOUNCE_SHORT = 0.08
+		local FIND_DEBOUNCE_SINGLE = 0.18
 
 		local function getCodeFontWidth(fontSize)
 			local cached = fontWidthCache[fontSize]
@@ -4577,8 +4580,14 @@ local function main()
 				index = 1
 				self.FindIndex = index
 			end
-			countLabel.Text = count > 0 and (tostring(index) .. "/" .. tostring(count) .. (self.FindMatchesCapped and "+" or "")) or "0/0"
-			countLabel.TextColor3 = count > 0 and Settings.Theme.Text or Color3.fromRGB(220, 90, 90)
+			local suffix = ""
+			if self.FindMatchesCapped then
+				suffix = "+"
+			elseif self.FindScanning then
+				suffix = "..."
+			end
+			countLabel.Text = count > 0 and (tostring(index) .. "/" .. tostring(count) .. suffix) or (self.FindScanning and "0/..." or "0/0")
+			countLabel.TextColor3 = count > 0 and Settings.Theme.Text or (self.FindScanning and Settings.Theme.PlaceholderText or Color3.fromRGB(220, 90, 90))
 		end
 
 		funcs.GetFindAnchor = function(self)
@@ -4622,6 +4631,7 @@ local function main()
 			self.FindMatchesByLine = matchesByLine
 			self.FindIndex = 0
 			self.FindMatchesCapped = false
+			self.FindScanning = false
 			self.FindScanToken = (self.FindScanToken or 0) + 1
 			local scanToken = self.FindScanToken
 
@@ -4631,14 +4641,41 @@ local function main()
 				return
 			end
 
-			local queryLen = #query
-			local scanStart = os.clock()
-			local ops = 0
-			for lineIndex, lineText in ipairs(self.Lines) do
-				local startPos = 1
-				while true do
-					local foundStart, foundEnd = lineText:find(query, startPos, true)
-					if not foundStart then break end
+			self.FindScanning = true
+			self:UpdateFindCount()
+			self:Refresh()
+
+			local delayTime = #query <= 1 and FIND_DEBOUNCE_SINGLE or FIND_DEBOUNCE_SHORT
+			local function runLater(fn)
+				if task and task.delay then
+					task.delay(delayTime, fn)
+				elseif task and task.spawn then
+					task.spawn(function()
+						if task.wait then task.wait(delayTime) end
+						fn()
+					end)
+				else
+					coroutine.wrap(fn)()
+				end
+			end
+
+			runLater(function()
+				if scanToken ~= self.FindScanToken or query ~= self.FindQuery then return end
+
+				local scanStart = os.clock()
+				local function yieldIfNeeded(force)
+					if force or os.clock() - scanStart > FIND_SCAN_BUDGET then
+						if task and task.wait then
+							task.wait()
+						end
+						if scanToken ~= self.FindScanToken or query ~= self.FindQuery then return false end
+						self:UpdateFindCount()
+						scanStart = os.clock()
+					end
+					return true
+				end
+
+				local function addMatch(lineIndex, foundStart, foundEnd)
 					local match = {Line = lineIndex, Start = foundStart, End = foundEnd}
 					matches[#matches + 1] = match
 					local lineMatches = matchesByLine[lineIndex]
@@ -4649,31 +4686,62 @@ local function main()
 					lineMatches[#lineMatches + 1] = match
 					if #matches >= MAX_FIND_MATCHES then
 						self.FindMatchesCapped = true
-						break
+						return false
 					end
-					startPos = foundStart + math.max(queryLen, 1)
-					ops = ops + 1
-					if ops % 50 == 0 and os.clock() - scanStart > FIND_SCAN_BUDGET then
-						task.wait()
-						if scanToken ~= self.FindScanToken then return end
-						scanStart = os.clock()
-					end
+					return true
 				end
-				if self.FindMatchesCapped then break end
-				if lineIndex % 200 == 0 and os.clock() - scanStart > FIND_SCAN_BUDGET then
-					task.wait()
-					if scanToken ~= self.FindScanToken then return end
-					scanStart = os.clock()
-				end
-			end
 
-			if selectMatch and #matches > 0 then
-				local line, column = self:GetFindAnchor()
-				self:SelectFindMatch(self:GetFindIndexFromPosition(line, column, false, true))
-			else
-				self:UpdateFindCount()
-				self:Refresh()
-			end
+				local queryLen = #query
+				local ops = 0
+				for lineIndex, lineText in ipairs(self.Lines) do
+					local lineLen = #lineText
+					local startPos = 1
+					while startPos <= lineLen do
+						local chunkEnd = math.min(lineLen, startPos + FIND_SCAN_CHARS - 1)
+						local searchEnd = math.min(lineLen, chunkEnd + queryLen - 1)
+						local chunk = lineText:sub(startPos, searchEnd)
+						local chunkSearchPos = 1
+
+						while true do
+							local foundStart, foundEnd = chunk:find(query, chunkSearchPos, true)
+							if not foundStart then break end
+
+							local absoluteStart = startPos + foundStart - 1
+							local absoluteEnd = startPos + foundEnd - 1
+							if absoluteStart > chunkEnd then
+								break
+							end
+
+							if not addMatch(lineIndex, absoluteStart, absoluteEnd) then
+								break
+							end
+
+							chunkSearchPos = foundStart + math.max(queryLen, 1)
+							ops = ops + 1
+							if ops % 12 == 0 and not yieldIfNeeded(false) then return end
+						end
+
+						if self.FindMatchesCapped then break end
+
+						startPos = chunkEnd + 1
+						ops = ops + 1
+						if not yieldIfNeeded(false) then return end
+					end
+
+					if self.FindMatchesCapped then break end
+					if lineIndex % 40 == 0 and not yieldIfNeeded(false) then return end
+				end
+
+				if scanToken ~= self.FindScanToken or query ~= self.FindQuery then return end
+				self.FindScanning = false
+				if selectMatch and #matches > 0 then
+					local line, column = self:GetFindAnchor()
+					self:SelectFindMatch(self:GetFindIndexFromPosition(line, column, false, true))
+				else
+					self:UpdateFindCount()
+					self:Refresh()
+				end
+			end)
 		end
 
 		funcs.SetFindQuery = function(self, query)
@@ -4772,6 +4840,7 @@ local function main()
 			self.FindMatches = {}
 			self.FindMatchesByLine = {}
 			self.FindMatchesCapped = false
+			self.FindScanning = false
 			self.FindIndex = 0
 			self.FindAnchorLine = nil
 			self.FindAnchorColumn = nil
@@ -5928,6 +5997,7 @@ local function main()
 				FindMatches = {},
 				FindMatchesByLine = {},
 				FindMatchesCapped = false,
+				FindScanning = false,
 				FindIndex = 0,
 				FindScanToken = 0,
 				FindAnchorLine = nil,
