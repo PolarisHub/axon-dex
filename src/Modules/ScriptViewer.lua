@@ -58,7 +58,7 @@ local function main()
 	local ScriptViewer = {}
 	local window, codeFrame
 
-	local execute, clear, dumpbtn
+	local execute, clear, findbtn, dumpbtn
 
 	local PreviousScr = nil
 
@@ -175,7 +175,7 @@ local function main()
 
 		local copy = Instance.new("TextButton",window.GuiElems.Content)
 		copy.BackgroundTransparency = 1
-		copy.Size = UDim2.new(0.33,0,0,20)
+		copy.Size = UDim2.new(0.25,0,0,20)
 		copy.Position = UDim2.new(0,0,0,0)
 		copy.Text = "Copy to Clipboard"
 
@@ -194,8 +194,8 @@ local function main()
 
 		local save = Instance.new("TextButton",window.GuiElems.Content)
 		save.BackgroundTransparency = 1
-		save.Size = UDim2.new(0.33,0,0,20)
-		save.Position = UDim2.new(0.33,0,0,0)
+		save.Size = UDim2.new(0.25,0,0,20)
+		save.Position = UDim2.new(0.25,0,0,0)
 		save.Text = "Save to File"
 		save.TextColor3 = Color3.new(1,1,1)
 
@@ -213,6 +213,17 @@ local function main()
 
 			Lib.SaveAsPrompt(filename,source)
 			--env.writefile(filename,source)
+		end)
+
+		findbtn = Instance.new("TextButton",window.GuiElems.Content)
+		findbtn.BackgroundTransparency = 1
+		findbtn.Position = UDim2.new(0.5,0,0,0)
+		findbtn.Size = UDim2.new(0.2,0,0,20)
+		findbtn.Text = "Find"
+		findbtn.TextColor3 = Color3.new(1,1,1)
+
+		findbtn.MouseButton1Click:Connect(function()
+			codeFrame:OpenFind()
 		end)
 
 		dumpbtn = Instance.new("TextButton",window.GuiElems.Content)

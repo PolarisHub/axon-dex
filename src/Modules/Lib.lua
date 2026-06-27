@@ -4086,6 +4086,10 @@ local function main()
 		local tweenService = service.TweenService
 		local lineTweens = {}
 
+		local function getCodeFontWidth(fontSize)
+			return service.TextService:GetTextSize("M", fontSize, Enum.Font.Code, Vector2.new(1000, 1000)).X
+		end
+
 		local function initBuiltIn()
 			local env = getfenv()
 			local type = type
@@ -4150,54 +4154,79 @@ local function main()
 			hhCorner.CornerRadius = UDim.new(0, 2)
 			hhCorner.Parent = hoverHighlight
 
+			local hoverTooltip = Instance.new("TextLabel")
+			hoverTooltip.Name = "HoverTooltip"
+			hoverTooltip.BackgroundColor3 = Settings.Theme.TextBox
+			hoverTooltip.BorderSizePixel = 0
+			hoverTooltip.Font = Enum.Font.Code
+			hoverTooltip.Position = UDim2.new(0, 0, 0, 0)
+			hoverTooltip.Size = UDim2.new(0, 180, 0, 20)
+			hoverTooltip.Text = ""
+			hoverTooltip.TextColor3 = Settings.Theme.Text
+			hoverTooltip.TextSize = 12
+			hoverTooltip.TextXAlignment = Enum.TextXAlignment.Left
+			hoverTooltip.Visible = false
+			hoverTooltip.ZIndex = 25
+			hoverTooltip.Parent = codeFrame
+
+			local tooltipPadding = Instance.new("UIPadding")
+			tooltipPadding.PaddingLeft = UDim.new(0, 6)
+			tooltipPadding.PaddingRight = UDim.new(0, 6)
+			tooltipPadding.Parent = hoverTooltip
+
 			codeFrame.InputChanged:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseMovement then
-					local fontSizeX, fontSizeY = math.ceil(obj.FontSize/2), obj.FontSize
+					local fontSizeX, fontSizeY = getCodeFontWidth(obj.FontSize), obj.FontSize
 					local relX = input.Position.X - codeFrame.AbsolutePosition.X
 					local relY = input.Position.Y - codeFrame.AbsolutePosition.Y
 
-					local totalLinesStr = tostring(#lines)
-					local linesOffset = #totalLinesStr*fontSizeX + 4*fontSizeX
-					
-					local charX = relX - linesOffset
-					local selX = math.floor(charX / fontSizeX) + obj.ViewX
+					local selX = math.floor(relX / fontSizeX) + obj.ViewX
 					local selY = math.floor(relY / fontSizeY) + obj.ViewY
 
 					local lineText = lines[selY + 1]
 					if lineText then
 						local word, left, right = getWordAt(lineText, selX + 1)
+						local tokenType = typeMap[(obj:HighlightLine(selY + 1) or {})[math.max(1, selX + 1)]]
 						if word and not keywords[word] then
-							local posX = linesOffset + (left - 1 - obj.ViewX) * fontSizeX
+							local posX = (left - 1 - obj.ViewX) * fontSizeX
 							local posY = (selY - obj.ViewY) * fontSizeY
 							local sizeX = (right - left + 1) * fontSizeX
-							
+
 							hoverHighlight.Position = UDim2.new(0, posX, 0, posY)
 							hoverHighlight.Size = UDim2.new(0, sizeX, 0, fontSizeY)
 							hoverHighlight.Visible = true
+							hoverTooltip.Text = (tokenType or "Symbol") .. "  " .. word .. "  (right-click actions)"
+							hoverTooltip.Position = UDim2.new(0, math.clamp(posX, 0, math.max(0, codeFrame.AbsoluteSize.X - 190)), 0, math.min(posY + fontSizeY + 2, math.max(0, codeFrame.AbsoluteSize.Y - 22)))
+							hoverTooltip.Visible = true
 						else
 							hoverHighlight.Visible = false
+							if tokenType then
+								hoverTooltip.Text = tokenType
+								hoverTooltip.Position = UDim2.new(0, math.clamp(relX + 10, 0, math.max(0, codeFrame.AbsoluteSize.X - 80)), 0, math.min(relY + 12, math.max(0, codeFrame.AbsoluteSize.Y - 22)))
+								hoverTooltip.Visible = true
+							else
+								hoverTooltip.Visible = false
+							end
 						end
 					else
 						hoverHighlight.Visible = false
+						hoverTooltip.Visible = false
 					end
 				end
 			end)
 
 			codeFrame.MouseLeave:Connect(function()
 				hoverHighlight.Visible = false
+				hoverTooltip.Visible = false
 			end)
 
 			codeFrame.InputBegan:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseButton2 then
-					local fontSizeX, fontSizeY = math.ceil(obj.FontSize/2), obj.FontSize
+					local fontSizeX, fontSizeY = getCodeFontWidth(obj.FontSize), obj.FontSize
 					local relX = input.Position.X - codeFrame.AbsolutePosition.X
 					local relY = input.Position.Y - codeFrame.AbsolutePosition.Y
 
-					local totalLinesStr = tostring(#lines)
-					local linesOffset = #totalLinesStr*fontSizeX + 4*fontSizeX
-					
-					local charX = relX - linesOffset
-					local selX = math.floor(charX / fontSizeX) + obj.ViewX
+					local selX = math.floor(relX / fontSizeX) + obj.ViewX
 					local selY = math.floor(relY / fontSizeY) + obj.ViewY
 
 					local lineText = lines[selY + 1]
@@ -4212,7 +4241,7 @@ local function main()
 
 			codeFrame.InputBegan:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-					local fontSizeX,fontSizeY = math.ceil(obj.FontSize/2),obj.FontSize
+					local fontSizeX,fontSizeY = getCodeFontWidth(obj.FontSize),obj.FontSize
 
 					local relX = mouse.X - codeFrame.AbsolutePosition.X
 					local relY = mouse.Y - codeFrame.AbsolutePosition.Y
@@ -4333,6 +4362,82 @@ local function main()
 			editBox.Visible = false
 			editBox.Parent = frame
 
+			local findBar = Instance.new("Frame")
+			findBar.Name = "FindBar"
+			findBar.AnchorPoint = Vector2.new(1, 0)
+			findBar.BackgroundColor3 = Settings.Theme.TextBox
+			findBar.BorderSizePixel = 0
+			findBar.Position = UDim2.new(1, -22, 0, 6)
+			findBar.Size = UDim2.new(0, 260, 0, 24)
+			findBar.Visible = false
+			findBar.ZIndex = 20
+			findBar.Parent = frame
+
+			local findBox = Instance.new("TextBox")
+			findBox.Name = "FindBox"
+			findBox.BackgroundTransparency = 1
+			findBox.ClearTextOnFocus = false
+			findBox.Font = Enum.Font.Code
+			findBox.PlaceholderColor3 = Settings.Theme.PlaceholderText
+			findBox.PlaceholderText = "Find"
+			findBox.Position = UDim2.new(0, 6, 0, 0)
+			findBox.Size = UDim2.new(1, -96, 1, 0)
+			findBox.Text = ""
+			findBox.TextColor3 = Settings.Theme.Text
+			findBox.TextSize = 14
+			findBox.TextXAlignment = Enum.TextXAlignment.Left
+			findBox.ZIndex = 21
+			findBox.Parent = findBar
+
+			local findCount = Instance.new("TextLabel")
+			findCount.Name = "Count"
+			findCount.BackgroundTransparency = 1
+			findCount.Font = Enum.Font.Code
+			findCount.Position = UDim2.new(1, -90, 0, 0)
+			findCount.Size = UDim2.new(0, 34, 1, 0)
+			findCount.Text = "0/0"
+			findCount.TextColor3 = Settings.Theme.Text
+			findCount.TextSize = 12
+			findCount.TextXAlignment = Enum.TextXAlignment.Center
+			findCount.ZIndex = 21
+			findCount.Parent = findBar
+
+			local findPrev = Instance.new("TextButton")
+			findPrev.Name = "Prev"
+			findPrev.BackgroundTransparency = 1
+			findPrev.Font = Enum.Font.Code
+			findPrev.Position = UDim2.new(1, -54, 0, 0)
+			findPrev.Size = UDim2.new(0, 18, 1, 0)
+			findPrev.Text = "↑"
+			findPrev.TextColor3 = Settings.Theme.Text
+			findPrev.TextSize = 14
+			findPrev.ZIndex = 21
+			findPrev.Parent = findBar
+
+			local findNext = Instance.new("TextButton")
+			findNext.Name = "Next"
+			findNext.BackgroundTransparency = 1
+			findNext.Font = Enum.Font.Code
+			findNext.Position = UDim2.new(1, -36, 0, 0)
+			findNext.Size = UDim2.new(0, 18, 1, 0)
+			findNext.Text = "↓"
+			findNext.TextColor3 = Settings.Theme.Text
+			findNext.TextSize = 14
+			findNext.ZIndex = 21
+			findNext.Parent = findBar
+
+			local findClose = Instance.new("TextButton")
+			findClose.Name = "Close"
+			findClose.BackgroundTransparency = 1
+			findClose.Font = Enum.Font.Code
+			findClose.Position = UDim2.new(1, -18, 0, 0)
+			findClose.Size = UDim2.new(0, 18, 1, 0)
+			findClose.Text = "×"
+			findClose.TextColor3 = Settings.Theme.Text
+			findClose.TextSize = 14
+			findClose.ZIndex = 21
+			findClose.Parent = findBar
+
 			lineTweens.Invis = tweenService:Create(cursor,TweenInfo.new(0.4,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{BackgroundTransparency = 1})
 			lineTweens.Vis = tweenService:Create(cursor,TweenInfo.new(0.2,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{BackgroundTransparency = 0})
 
@@ -4340,6 +4445,12 @@ local function main()
 			elems.LineNumbersLabel = lineNumbersLabel
 			elems.Cursor = cursor
 			elems.EditBox = editBox
+			elems.FindBar = findBar
+			elems.FindBox = findBox
+			elems.FindCount = findCount
+			elems.FindPrev = findPrev
+			elems.FindNext = findNext
+			elems.FindClose = findClose
 			elems.ScrollCorner = create({{1,"Frame",{BackgroundColor3=Color3.new(0.15686275064945,0.15686275064945,0.15686275064945),BorderSizePixel=0,Name="ScrollCorner",Position=UDim2.new(1,-16,1,-16),Size=UDim2.new(0,16,0,16),Visible=false,}}})
 
 			elems.ScrollCorner.Parent = frame
@@ -4347,6 +4458,31 @@ local function main()
 				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 					obj:SetEditing(true,input)
 				end
+			end)
+
+			findBox:GetPropertyChangedSignal("Text"):Connect(function()
+				obj:SetFindQuery(findBox.Text)
+			end)
+
+			findBox.InputBegan:Connect(function(input)
+				if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+				if input.KeyCode == Enum.KeyCode.Escape then
+					obj:CloseFind()
+				elseif input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.KeypadEnter then
+					obj:FindNext(service.UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or service.UserInputService:IsKeyDown(Enum.KeyCode.RightShift))
+				end
+			end)
+
+			findPrev.MouseButton1Click:Connect(function()
+				obj:FindNext(true)
+			end)
+
+			findNext.MouseButton1Click:Connect(function()
+				obj:FindNext(false)
+			end)
+
+			findClose.MouseButton1Click:Connect(function()
+				obj:CloseFind()
 			end)
 
 			obj.Frame = frame
@@ -4396,6 +4532,142 @@ local function main()
 			self.EditBoxCopying = false
 		end
 
+		funcs.UpdateFindCount = function(self)
+			local countLabel = self.GuiElems.FindCount
+			if not countLabel then return end
+
+			local matches = self.FindMatches or {}
+			local count = #matches
+			local index = self.FindIndex or 0
+			countLabel.Text = count > 0 and (tostring(index) .. "/" .. tostring(count)) or "0/0"
+			countLabel.TextColor3 = count > 0 and Settings.Theme.Text or Color3.fromRGB(220, 90, 90)
+		end
+
+		funcs.RebuildFindMatches = function(self)
+			local query = self.FindQuery or ""
+			local matches = {}
+			local matchesByLine = {}
+			self.FindMatches = matches
+			self.FindMatchesByLine = matchesByLine
+			self.FindIndex = 0
+
+			if query == "" then
+				self:UpdateFindCount()
+				self:Refresh()
+				return
+			end
+
+			local lowerQuery = query:lower()
+			local queryLen = #query
+			for lineIndex, lineText in ipairs(self.Lines) do
+				local lowerLine = lineText:lower()
+				local startPos = 1
+				while true do
+					local foundStart, foundEnd = lowerLine:find(lowerQuery, startPos, true)
+					if not foundStart then break end
+					local match = {Line = lineIndex, Start = foundStart, End = foundEnd}
+					matches[#matches + 1] = match
+					local lineMatches = matchesByLine[lineIndex]
+					if not lineMatches then
+						lineMatches = {}
+						matchesByLine[lineIndex] = lineMatches
+					end
+					lineMatches[#lineMatches + 1] = match
+					startPos = foundStart + math.max(queryLen, 1)
+				end
+			end
+
+			self:UpdateFindCount()
+			self:Refresh()
+		end
+
+		funcs.SetFindQuery = function(self, query)
+			query = query or ""
+			if self.FindQuery == query then return end
+			self.FindQuery = query
+			self:RebuildFindMatches()
+		end
+
+		funcs.SelectFindMatch = function(self, index)
+			local matches = self.FindMatches or {}
+			local match = matches[index]
+			if not match then
+				self:UpdateFindCount()
+				return
+			end
+
+			self.FindIndex = index
+			self.SelectionRange = {{match.Start - 1, match.Line - 1}, {match.End, match.Line - 1}}
+			self.CursorX = match.End
+			self.CursorY = match.Line - 1
+			self.FloatCursorX = self.CursorX
+			self:ScrollToLineCentred(match.Line - 1)
+			self:SetCopyableSelection()
+			self:UpdateFindCount()
+			self:Refresh()
+		end
+
+		funcs.FindNext = function(self, backwards)
+			local matches = self.FindMatches or {}
+			if #matches == 0 then
+				self:UpdateFindCount()
+				return
+			end
+
+			local current = self.FindIndex or 0
+			if backwards then
+				current = current <= 1 and #matches or current - 1
+			else
+				current = current >= #matches and 1 or current + 1
+			end
+
+			self:SelectFindMatch(current)
+		end
+
+		funcs.OpenFind = function(self, initialQuery)
+			local elems = self.GuiElems
+			if not elems or not elems.FindBar then return end
+
+			if not initialQuery or initialQuery == "" then
+				initialQuery = self:GetSelectionText()
+				if initialQuery and initialQuery:find("\n", 1, true) then
+					initialQuery = ""
+				end
+			end
+			if not initialQuery or initialQuery == "" then
+				local line = self.Lines[self.CursorY + 1] or ""
+				initialQuery = getWordAt(line, self.CursorX + 1)
+			end
+
+			elems.FindBar.Visible = true
+			if initialQuery and initialQuery ~= "" then
+				elems.FindBox.Text = initialQuery
+				self:SetFindQuery(initialQuery)
+			else
+				self:RebuildFindMatches()
+			end
+			elems.FindBox:CaptureFocus()
+			elems.FindBox.SelectionStart = 1
+			elems.FindBox.CursorPosition = #elems.FindBox.Text + 1
+			local matches = self.FindMatches or {}
+			if #matches > 0 and (self.FindIndex or 0) == 0 then
+				self:FindNext(false)
+			end
+		end
+
+		funcs.CloseFind = function(self)
+			local elems = self.GuiElems
+			if not elems or not elems.FindBar then return end
+			elems.FindBar.Visible = false
+			self.FindQuery = ""
+			self.FindMatches = {}
+			self.FindMatchesByLine = {}
+			self.FindIndex = 0
+			self:UpdateFindCount()
+			self:Refresh()
+			self:SetEditing(true)
+		end
+
 		funcs.ShowCodeContextMenu = function(self, word, lineIndex, position)
 			local context = self.ContextMenu
 			if not context then
@@ -4410,6 +4682,15 @@ local function main()
 				Icon = "Copy",
 				OnClick = function()
 					pcall(setclipboard or writeclipboard, word)
+				end
+			})
+
+			context:Add({
+				Name = "Find '" .. word .. "'",
+				IconMap = Main.MiscIcons,
+				Icon = "Reference",
+				OnClick = function()
+					self:OpenFind(word)
 				end
 			})
 
@@ -4690,11 +4971,13 @@ local function main()
 						self:ResetSelection(true)
 						self:JumpToCursor()
 					end)
-				elseif service.UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+				elseif service.UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or service.UserInputService:IsKeyDown(Enum.KeyCode.RightControl) then
 					if keycode == keycodes.A then
 						self.SelectionRange = {{0,0},{#self.Lines[#self.Lines],#self.Lines-1}}
 						self:SetCopyableSelection()
 						self:Refresh()
+					elseif keycode == keycodes.F then
+						self:OpenFind()
 					end
 				end
 			end)
@@ -4891,17 +5174,17 @@ local function main()
 			local hSize = math.max(0,linesFrame.AbsoluteSize.X)
 			local vSize = math.max(0,linesFrame.AbsoluteSize.Y)
 			local maxLines = math.ceil(vSize / self.FontSize)
-			local maxCols = math.ceil(hSize / math.ceil(self.FontSize/2))
+			local fontWidth = getCodeFontWidth(self.FontSize)
+			local maxCols = math.ceil(hSize / fontWidth)
 			local viewX,viewY = self.ViewX,self.ViewY
 			local totalLinesStr = tostring(#self.Lines)
-			local fontWidth = math.ceil(self.FontSize / 2)
 			local linesOffset = #totalLinesStr*fontWidth + 4*fontWidth
 
 			if input then
 				local linesFrame = self.GuiElems.LinesFrame
 				local frameX,frameY = linesFrame.AbsolutePosition.X,linesFrame.AbsolutePosition.Y
 				local mouseX,mouseY = input.Position.X,input.Position.Y
-				local fontSizeX,fontSizeY = math.ceil(self.FontSize/2),self.FontSize
+				local fontSizeX,fontSizeY = fontWidth,self.FontSize
 
 				self.CursorX = self.ViewX + math.round((mouseX - frameX) / fontSizeX)
 				self.CursorY = self.ViewY + math.floor((mouseY - frameY) / fontSizeY)
@@ -4929,7 +5212,7 @@ local function main()
 			if cursorVisible then
 				local offX = (cursorX - viewX)
 				local offY = (cursorY - viewY)
-				cursor.Position = UDim2.new(0,linesOffset + offX*math.ceil(self.FontSize/2) - 1,0,offY*self.FontSize)
+				cursor.Position = UDim2.new(0,linesOffset + offX*fontWidth - 1,0,offY*self.FontSize)
 				cursor.Size = UDim2.new(0,1,0,self.FontSize+2)
 				cursor.Visible = true
 				self:CursorAnim(true)
@@ -5196,7 +5479,8 @@ local function main()
 			local hSize = math.max(0,linesFrame.AbsoluteSize.X)
 			local vSize = math.max(0,linesFrame.AbsoluteSize.Y)
 			local maxLines = math.ceil(vSize / self.FontSize)
-			local maxCols = math.ceil(hSize / math.ceil(self.FontSize/2))
+			local fontSizeX = getCodeFontWidth(self.FontSize)
+			local maxCols = math.ceil(hSize / fontSizeX)
 			local gsub = string.gsub
 			local sub = string.sub
 
@@ -5218,7 +5502,12 @@ local function main()
 					selectionHighlight.Name = "SelectionHighlight"
 					selectionHighlight.BorderSizePixel = 0
 					selectionHighlight.BackgroundColor3 = Settings.Theme.Syntax.SelectionBack
+					selectionHighlight.ZIndex = 2
 					selectionHighlight.Parent = lineFrame
+
+					local searchHighlights = Instance.new("Folder")
+					searchHighlights.Name = "SearchHighlights"
+					searchHighlights.Parent = lineFrame
 
 					local label = Instance.new("TextLabel")
 					label.Name = "Label"
@@ -5229,7 +5518,7 @@ local function main()
 					label.RichText = true
 					label.TextXAlignment = Enum.TextXAlignment.Left
 					label.TextColor3 = self.Colors.Text
-					label.ZIndex = 2
+					label.ZIndex = 3
 					label.Parent = lineFrame
 
 					lineFrame.Parent = linesFrame
@@ -5241,6 +5530,30 @@ local function main()
 				local resText = ""
 				local highlights = self:HighlightLine(relaY)
 				local colStart = viewX + 1
+				local fontSizeX = getCodeFontWidth(self.FontSize)
+
+				for _, child in ipairs(lineFrame.SearchHighlights:GetChildren()) do
+					child:Destroy()
+				end
+
+				local lineMatches = self.FindMatchesByLine and self.FindMatchesByLine[relaY]
+				if lineMatches then
+					for _, match in ipairs(lineMatches) do
+						local visibleStart = math.max(match.Start - 1, viewX)
+						local visibleEnd = math.min(match.End, viewX + maxCols)
+						if visibleEnd > visibleStart then
+							local matchHighlight = Instance.new("Frame")
+							matchHighlight.Name = "SearchHighlight"
+							matchHighlight.BorderSizePixel = 0
+							matchHighlight.BackgroundColor3 = Settings.Theme.Highlight
+							matchHighlight.BackgroundTransparency = (self.FindMatches and self.FindMatches[self.FindIndex] == match) and 0.25 or 0.65
+							matchHighlight.Position = UDim2.new(0, (visibleStart - viewX) * fontSizeX, 0, 1)
+							matchHighlight.Size = UDim2.new(0, (visibleEnd - visibleStart) * fontSizeX, 1, -2)
+							matchHighlight.ZIndex = 1
+							matchHighlight.Parent = lineFrame.SearchHighlights
+						end
+					end
+				end
 
 				local richTemplates = self.RichTemplates
 				local textTemplate = richTemplates.Text
@@ -5257,7 +5570,6 @@ local function main()
 				local selRelaX,selRelaY = viewX,relaY-1
 
 				if selRelaY >= selPos1[2] and selRelaY <= selPos2[2] then
-					local fontSizeX = math.ceil(self.FontSize/2)
 					local posX = (selRelaY == selPos1[2] and selPos1[1] or 0) - viewX
 					local sizeX = (selRelaY == selPos2[2] and selPos2[1]-posX-viewX or maxCols+viewX)
 
@@ -5328,7 +5640,7 @@ local function main()
 
 		funcs.UpdateView = function(self)
 			local totalLinesStr = tostring(#self.Lines)
-			local fontWidth = math.ceil(self.FontSize / 2)
+			local fontWidth = getCodeFontWidth(self.FontSize)
 			local linesOffset = #totalLinesStr*fontWidth + 4*fontWidth
 
 			local linesFrame = self.Frame.Lines
@@ -5391,7 +5703,11 @@ local function main()
 			self.Text = table.concat(self.Lines,"\n")
 			self:MapNewLines()
 			self:PreHighlight()
-			self:Refresh()
+			if self.FindQuery and self.FindQuery ~= "" then
+				self:RebuildFindMatches()
+			else
+				self:Refresh()
+			end
 			--self.TextChanged:Fire()
 		end
 
@@ -5466,6 +5782,10 @@ local function main()
 				FloatCursorX = 0,
 				Text = "",
 				PreHighlights = {},
+				FindQuery = "",
+				FindMatches = {},
+				FindMatchesByLine = {},
+				FindIndex = 0,
 				SelectionRange = {{-1,-1},{-1,-1}},
 				NewLines = {},
 				FrameOffsets = Vector2.new(0,0),
