@@ -65,6 +65,9 @@ local function main()
 	local currentScanId = 0
 	local targetScript
 	local resolvedNames = {}
+	local functionCallConn
+	local lastCallTarget
+	local blockRefreshQueued = false
 
 	-- Color theme for value types
 	local TYPE_COLORS = {
@@ -85,6 +88,23 @@ local function main()
 		BrickColor = Color3.fromRGB(206, 145, 120),   -- Orange
 		thread = Color3.fromRGB(120, 120, 120),       -- Gray
 	}
+
+	local stateRoot
+	pcall(function()
+		stateRoot = (env and env.getgenv and env.getgenv()) or (getgenv and getgenv())
+	end)
+	stateRoot = stateRoot or _G
+	stateRoot.AxonFunctionBlockState = stateRoot.AxonFunctionBlockState or {
+		Blocks = {},
+		BlockActions = 0,
+		UnblockActions = 0,
+		TotalBlockedCalls = 0
+	}
+	local functionBlockState = stateRoot.AxonFunctionBlockState
+	functionBlockState.Blocks = functionBlockState.Blocks or {}
+	functionBlockState.BlockActions = functionBlockState.BlockActions or 0
+	functionBlockState.UnblockActions = functionBlockState.UnblockActions or 0
+	functionBlockState.TotalBlockedCalls = functionBlockState.TotalBlockedCalls or 0
 
 	local function getTypeColor(valType)
 		return TYPE_COLORS[valType] or Color3.fromRGB(200, 200, 200)
@@ -397,6 +417,170 @@ local function main()
 		end
 	end
 
+	local function getNodeFunction(node)
+		if not node then return nil end
+		if node.ValueType == "function" and typeof(node.Value) == "function" then
+			return node.Value
+		end
+		if node.Type == "Function" and typeof(node.Func) == "function" then
+			return node.Func
+		end
+	end
+
+	local function getFunctionInfoSafe(func)
+		local getinfo = (debug and debug.getinfo) or getinfo
+		if getinfo then
+			local ok, info = pcall(getinfo, func)
+			if ok and type(info) == "table" then
+				return info
+			end
+		end
+
+		local info = {}
+		if debug and debug.info then
+			local okName, name = pcall(debug.info, func, "n")
+			if okName then info.name = name end
+			local okSource, source = pcall(debug.info, func, "s")
+			if okSource then info.source = source end
+			local okLine, lineDefined = pcall(debug.info, func, "l")
+			if okLine then info.linedefined = lineDefined end
+			local okArity, numparams, isVararg = pcall(debug.info, func, "a")
+			if okArity then
+				info.numparams = numparams
+				info.is_vararg = isVararg
+			end
+		end
+		return info
+	end
+
+	local function getFunctionBlockEntry(func, createEntry)
+		if typeof(func) ~= "function" then return nil end
+		local entry = functionBlockState.Blocks[func]
+		if not entry and createEntry then
+			entry = {
+				Func = func,
+				Blocked = false,
+				Hooked = false,
+				BlockedCalls = 0
+			}
+			functionBlockState.Blocks[func] = entry
+		end
+		return entry
+	end
+
+	local function getFunctionBlockTotals()
+		local active = 0
+		local hooked = 0
+		local blockedCalls = functionBlockState.TotalBlockedCalls or 0
+		for _, entry in next, functionBlockState.Blocks do
+			if entry.Hooked then
+				hooked = hooked + 1
+			end
+			if entry.Blocked then
+				active = active + 1
+			end
+		end
+		return active, hooked, blockedCalls, functionBlockState.BlockActions or 0, functionBlockState.UnblockActions or 0
+	end
+
+	local function buildStatusText()
+		local text = ("Scanned: %d functions | Showing: %d items"):format(#allFunctions, #tree)
+		local active, hooked, blockedCalls, blockActions, unblockActions = getFunctionBlockTotals()
+		if hooked > 0 or blockActions > 0 or unblockActions > 0 or blockedCalls > 0 then
+			text = text .. (" | Active blocks: %d | Blocked calls: %d | Block/Unblock: %d/%d"):format(active, blockedCalls, blockActions, unblockActions)
+		end
+		return text
+	end
+
+	local function requestBlockRefresh()
+		if blockRefreshQueued then return end
+		blockRefreshQueued = true
+		local defer = task and task.defer
+		local runLater = defer or function(fn)
+			coroutine.wrap(fn)()
+		end
+		runLater(function()
+			blockRefreshQueued = false
+			if statusLabel then
+				statusLabel.Text = buildStatusText()
+			end
+			if window and window.IsContentVisible and window:IsContentVisible() and FunctionDumper.Refresh then
+				FunctionDumper.Refresh()
+			end
+		end)
+	end
+
+	local function getFunctionDisplayName(func, node)
+		if node and node.Name then
+			return safeToString(node.Name, 80)
+		end
+		local info = getFunctionInfoSafe(func)
+		if info.name and info.name ~= "" then
+			return safeToString(info.name, 80)
+		end
+		if info.linedefined and tonumber(info.linedefined) then
+			return ("anonymous_line_%d"):format(info.linedefined)
+		end
+		return safeToString(func, 80)
+	end
+
+	local function getArgumentPlaceholder(func)
+		local info = getFunctionInfoSafe(func)
+		local count = tonumber(info.numparams) or 0
+		local parts = {}
+		for i = 1, count do
+			parts[#parts + 1] = "args" .. tostring(i)
+		end
+		if #parts == 0 then
+			return info.is_vararg and "args1, args2, ..." or "no args"
+		end
+		if info.is_vararg then
+			parts[#parts + 1] = "..."
+		end
+		return table.concat(parts, ", ")
+	end
+
+	local function parseArgumentList(text)
+		local expr = trim(text)
+		if expr == "" then
+			return true, {}
+		end
+
+		local loader = (env and env.loadstring) or loadstring
+		if not loader then
+			return false, "loadstring is not available"
+		end
+
+		local chunk, compileErr = loader("return " .. expr)
+		if not chunk then
+			return false, "Compile error: " .. tostring(compileErr)
+		end
+
+		local results = {pcall(chunk)}
+		if not results[1] then
+			return false, "Execution error: " .. tostring(results[2])
+		end
+		table.remove(results, 1)
+		return true, results
+	end
+
+	local function formatReturnValues(values)
+		if #values == 0 then
+			return "no returns"
+		end
+
+		local parts = {}
+		local maxValues = math.min(#values, 5)
+		for i = 1, maxValues do
+			local value = values[i]
+			parts[#parts + 1] = ("<%s> %s"):format(typeof(value), formatValue(value, typeof(value)))
+		end
+		if #values > maxValues then
+			parts[#parts + 1] = ("... %d more"):format(#values - maxValues)
+		end
+		return table.concat(parts, ", ")
+	end
+
 	local function loadNodeChildren(node)
 		if node.ChildrenLoaded then return end
 		node.ChildrenLoaded = true
@@ -681,7 +865,7 @@ local function main()
 
 		scrollV.TotalSpace = #tree
 		scrollV:Update()
-		statusLabel.Text = ("Scanned: %d functions | Showing: %d items"):format(#allFunctions, #tree)
+		statusLabel.Text = buildStatusText()
 	end
 
 	FunctionDumper.UpdateView = function()
@@ -1016,6 +1200,142 @@ local function main()
 		return false, err
 	end
 
+	FunctionDumper.BlockFunction = function(func, node)
+		if typeof(func) ~= "function" then
+			return false, "selected node is not a function"
+		end
+
+		local hook = (env and (env.hookfunction or env.replaceclosure)) or hookfunction or replaceclosure
+		if not hook then
+			local err = "hookfunction/replaceclosure is not supported by your executor"
+			if statusLabel then statusLabel.Text = "Block failed: " .. err end
+			warn("[Axon Dumper] " .. err)
+			return false, err
+		end
+
+		local entry = getFunctionBlockEntry(func, true)
+		if not entry.Hooked then
+			local replacement = function(...)
+				if entry.Blocked then
+					entry.BlockedCalls = (entry.BlockedCalls or 0) + 1
+					functionBlockState.TotalBlockedCalls = (functionBlockState.TotalBlockedCalls or 0) + 1
+					requestBlockRefresh()
+					return nil
+				end
+				if typeof(entry.Original) == "function" then
+					return entry.Original(...)
+				end
+				return nil
+			end
+
+			local replacementClosure = replacement
+			local newClosure = (env and env.newcclosure) or newcclosure
+			if newClosure then
+				local closureOk, wrapped = pcall(newClosure, replacement)
+				if closureOk and typeof(wrapped) == "function" then
+					replacementClosure = wrapped
+				end
+			end
+
+			local hookOk, originalOrErr = pcall(hook, func, replacementClosure)
+			if not hookOk then
+				if statusLabel then statusLabel.Text = "Block failed: " .. tostring(originalOrErr) end
+				warn("[Axon Dumper] Failed to hook function: " .. tostring(originalOrErr))
+				return false, originalOrErr
+			end
+
+			if typeof(originalOrErr) == "function" then
+				entry.Original = originalOrErr
+			end
+			entry.Hooked = true
+			entry.Name = getFunctionDisplayName(func, node)
+		end
+
+		if not entry.Blocked then
+			entry.Blocked = true
+			functionBlockState.BlockActions = (functionBlockState.BlockActions or 0) + 1
+		end
+
+		if statusLabel then
+			local active, _, blockedCalls, blockActions, unblockActions = getFunctionBlockTotals()
+			statusLabel.Text = ("Blocked: %s | Active: %d | Blocked calls: %d | Block/Unblock: %d/%d"):format(getFunctionDisplayName(func, node), active, blockedCalls, blockActions, unblockActions)
+		end
+		FunctionDumper.Refresh()
+		return true
+	end
+
+	FunctionDumper.UnblockFunction = function(func, node)
+		local entry = getFunctionBlockEntry(func, false)
+		if not entry then
+			return false, "function is not blocked"
+		end
+
+		if entry.Blocked then
+			entry.Blocked = false
+			functionBlockState.UnblockActions = (functionBlockState.UnblockActions or 0) + 1
+		end
+
+		if statusLabel then
+			local active, _, blockedCalls, blockActions, unblockActions = getFunctionBlockTotals()
+			statusLabel.Text = ("Unblocked: %s | Active: %d | Blocked calls: %d | Block/Unblock: %d/%d"):format(getFunctionDisplayName(func, node), active, blockedCalls, blockActions, unblockActions)
+		end
+		FunctionDumper.Refresh()
+		return true
+	end
+
+	FunctionDumper.PromptCallFunction = function(func, node)
+		if typeof(func) ~= "function" then return end
+		local win = FunctionDumper.CallPromptWindow
+		if not win then return end
+
+		lastCallTarget = {Func = func, Node = node}
+		local placeholder = getArgumentPlaceholder(func)
+		win:SetTitle("Call " .. getFunctionDisplayName(func, node))
+		win.Elements.ErrorLabel.Text = ""
+		win.Elements.InputBox:SetText("")
+		win.Elements.InputBox.TextBox.PlaceholderText = placeholder
+		win.Elements.InputBox.TextBox.PlaceholderColor3 = Settings.Theme.PlaceholderText
+
+		if functionCallConn then
+			functionCallConn:Disconnect()
+			functionCallConn = nil
+		end
+
+		functionCallConn = win.Elements.CallButton.OnClick:Connect(function()
+			if not lastCallTarget or typeof(lastCallTarget.Func) ~= "function" then
+				win.Elements.ErrorLabel.Text = "No function selected"
+				return
+			end
+
+			local okArgs, argsOrErr = parseArgumentList(win.Elements.InputBox:GetText())
+			if not okArgs then
+				win.Elements.ErrorLabel.Text = tostring(argsOrErr)
+				return
+			end
+
+			local args = argsOrErr
+			local unpackValues = unpack or table.unpack
+			local results = {pcall(lastCallTarget.Func, unpackValues(args))}
+			if not results[1] then
+				win.Elements.ErrorLabel.Text = "Call error: " .. tostring(results[2])
+				return
+			end
+			table.remove(results, 1)
+
+			local resultText = formatReturnValues(results)
+			print("[FunctionDumper] Call returned: " .. resultText)
+			if statusLabel then
+				statusLabel.Text = ("Call returned %d value(s): %s"):format(#results, resultText)
+			end
+			win:Close()
+		end)
+
+		win:Show()
+		pcall(function()
+			win.Elements.InputBox.TextBox:CaptureFocus()
+		end)
+	end
+
 	FunctionDumper.SetEditingNode = function(node, idx)
 		editingNode = node
 		local entry = listEntries[idx]
@@ -1058,6 +1378,9 @@ local function main()
 			local node = tree[i + FunctionDumper.Index]
 			if node then
 				local depth = node.Depth
+				local nodeFunc = getNodeFunction(node)
+				local blockEntry = nodeFunc and getFunctionBlockEntry(nodeFunc, false)
+				local isBlocked = blockEntry and blockEntry.Blocked
 				entry.Gui.Visible = true
 
 				-- Layout placements
@@ -1066,18 +1389,33 @@ local function main()
 
 				-- Format type indicators
 				if node.Type == "Function" then
-					entry.Name.TextColor3 = theme.Text
-					entry.Name.Size = UDim2.new(1, -(depth * INDENT + NAME_OFF) - 2, 1, 0)
-					entry.ValueLabel.Visible = false
+					entry.Name.TextColor3 = isBlocked and Color3.fromRGB(255, 95, 95) or theme.Text
+					if isBlocked then
+						local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
+						entry.Name.Size = UDim2.new(0, nameSize + 4, 1, 0)
+						entry.ValueLabel.Position = UDim2.new(0, depth * INDENT + NAME_OFF + nameSize + 8, 0, 0)
+						entry.ValueLabel.Size = UDim2.new(1, -(depth * INDENT + NAME_OFF + nameSize + 8) - 4, 1, 0)
+						entry.ValueLabel.Text = ("BLOCKED (%d)"):format(blockEntry.BlockedCalls or 0)
+						entry.ValueLabel.TextColor3 = Color3.fromRGB(255, 95, 95)
+						entry.ValueLabel.Visible = true
+					else
+						entry.Name.Size = UDim2.new(1, -(depth * INDENT + NAME_OFF) - 2, 1, 0)
+						entry.ValueLabel.Visible = false
+					end
 				elseif node.Type == "Upvalue" or node.Type == "Constant" or node.Type == "TableValue" or node.Type == "Metadata" then
-					entry.Name.TextColor3 = Color3.fromRGB(150, 150, 150)
+					entry.Name.TextColor3 = isBlocked and Color3.fromRGB(255, 95, 95) or Color3.fromRGB(150, 150, 150)
 					local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
 					entry.Name.Size = UDim2.new(0, nameSize + 4, 1, 0)
 
 					entry.ValueLabel.Position = UDim2.new(0, depth * INDENT + NAME_OFF + nameSize + 8, 0, 0)
 					entry.ValueLabel.Size = UDim2.new(1, -(depth * INDENT + NAME_OFF + nameSize + 8) - 4, 1, 0)
-					entry.ValueLabel.Text = formatValue(node.Value, node.ValueType)
-					entry.ValueLabel.TextColor3 = getTypeColor(node.ValueType)
+					if isBlocked then
+						entry.ValueLabel.Text = ("BLOCKED (%d) "):format(blockEntry.BlockedCalls or 0) .. formatValue(node.Value, node.ValueType)
+						entry.ValueLabel.TextColor3 = Color3.fromRGB(255, 95, 95)
+					else
+						entry.ValueLabel.Text = formatValue(node.Value, node.ValueType)
+						entry.ValueLabel.TextColor3 = getTypeColor(node.ValueType)
+					end
 					entry.ValueLabel.Visible = true
 
 					-- Position editbox if editing this node
@@ -1109,6 +1447,7 @@ local function main()
 				end
 				miscIcons:DisplayByKey(entry.Icon, iconKey)
 				entry.Icon.ImageTransparency = (node.Type == "Function" or node.Type == "Upvalue") and 0 or 0.35
+				entry.Icon.ImageColor3 = isBlocked and Color3.fromRGB(255, 95, 95) or Color3.new(1, 1, 1)
 
 				drawLines(entry, node)
 
@@ -1121,6 +1460,10 @@ local function main()
 				elseif Lib.CheckMouseInGui(entry.Gui) then
 					entry.Highlight.BackgroundColor3 = theme.Button
 					entry.Highlight.BackgroundTransparency = 0.5
+					if activeBar then activeBar.Visible = false end
+				elseif isBlocked then
+					entry.Highlight.BackgroundColor3 = Color3.fromRGB(95, 20, 20)
+					entry.Highlight.BackgroundTransparency = 0.58
 					if activeBar then activeBar.Visible = false end
 				else
 					entry.Highlight.BackgroundTransparency = 1
@@ -1166,6 +1509,40 @@ local function main()
 	FunctionDumper.ShowContext = function(position)
 		if not selectedNode then return end
 		context:Clear()
+
+		local selectedFunc = getNodeFunction(selectedNode)
+		if selectedFunc then
+			context:Add({
+				Name = "Call / Fire Function",
+				IconMap = Main.MiscIcons,
+				Icon = "CallFunction",
+				OnClick = function()
+					FunctionDumper.PromptCallFunction(selectedFunc, selectedNode)
+				end
+			})
+
+			local blockEntry = getFunctionBlockEntry(selectedFunc, false)
+			if blockEntry and blockEntry.Blocked then
+				context:Add({
+					Name = ("Unblock Function Calls (%d blocked)"):format(blockEntry.BlockedCalls or 0),
+					IconMap = Main.MiscIcons,
+					Icon = "Play",
+					OnClick = function()
+						FunctionDumper.UnblockFunction(selectedFunc, selectedNode)
+					end
+				})
+			else
+				context:Add({
+					Name = "Block Function Calls",
+					IconMap = Main.MiscIcons,
+					Icon = "Delete",
+					OnClick = function()
+						FunctionDumper.BlockFunction(selectedFunc, selectedNode)
+					end
+				})
+			end
+			context:AddDivider()
+		end
 
 		if isEditableNode(selectedNode) then
 			local labelName = "Edit Value"
@@ -1447,6 +1824,53 @@ local function main()
 		end)
 	end
 
+	FunctionDumper.InitCallPromptWindow = function()
+		local win = Lib.Window.new()
+		win.Alignable = false
+		win.Resizable = false
+		win:SetTitle("Call Function")
+		win:SetSize(360, 125)
+
+		local label = Lib.Label.new()
+		label.Text = "Arguments (Luau return list):"
+		label.Position = UDim2.new(0, 10, 0, 10)
+		label.Size = UDim2.new(1, -20, 0, 20)
+		win:Add(label)
+
+		local inputFrame = Lib.ViewportTextBox.new()
+		inputFrame.Position = UDim2.new(0, 10, 0, 35)
+		inputFrame.Size = UDim2.new(1, -20, 0, 20)
+		inputFrame.TextBox.PlaceholderColor3 = Settings.Theme.PlaceholderText
+		inputFrame.TextBox.PlaceholderText = "args1, args2"
+		win:Add(inputFrame, "InputBox")
+
+		local errorLabel = Lib.Label.new()
+		errorLabel.Text = ""
+		errorLabel.Position = UDim2.new(0, 10, 1, -45)
+		errorLabel.Size = UDim2.new(1, -20, 0, 20)
+		errorLabel.TextColor3 = Settings.Theme.Important
+		win:Add(errorLabel, "ErrorLabel")
+
+		local cancelButton = Lib.Button.new()
+		cancelButton.AnchorPoint = Vector2.new(1, 1)
+		cancelButton.Text = "Cancel"
+		cancelButton.Position = UDim2.new(0.5, -5, 1, -5)
+		cancelButton.Size = UDim2.new(0.5, -10, 0, 20)
+		cancelButton.OnClick:Connect(function()
+			win:Close()
+		end)
+		win:Add(cancelButton)
+
+		local callButton = Lib.Button.new()
+		callButton.AnchorPoint = Vector2.new(0, 1)
+		callButton.Text = "Call"
+		callButton.Position = UDim2.new(0.5, 5, 1, -5)
+		callButton.Size = UDim2.new(0.5, -10, 0, 20)
+		win:Add(callButton, "CallButton")
+
+		FunctionDumper.CallPromptWindow = win
+	end
+
 	FunctionDumper.Dump = function(scr)
 		if not scr then return end
 		targetScript = scr
@@ -1666,6 +2090,7 @@ local function main()
 		FunctionDumper.InitClickSystem()
 		FunctionDumper.InitSearch()
 		FunctionDumper.InitEditBox()
+		FunctionDumper.InitCallPromptWindow()
 	end
 
 	FunctionDumper.SelectFunction = function(targetFunc)
