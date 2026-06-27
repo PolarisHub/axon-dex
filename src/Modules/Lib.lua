@@ -4106,8 +4106,8 @@ local function main()
 		local tweenService = service.TweenService
 		local lineTweens = {}
 		local fontWidthCache = {}
-		local MAX_FIND_MATCHES = 5000
-		local FIND_SCAN_BUDGET = 0.012
+		local MAX_FIND_MATCHES = 20
+		local FIND_SCAN_BUDGET = 0.006
 
 		local function getCodeFontWidth(fontSize)
 			local cached = fontWidthCache[fontSize]
@@ -4653,14 +4653,14 @@ local function main()
 					end
 					startPos = foundStart + math.max(queryLen, 1)
 					ops = ops + 1
-					if ops % 250 == 0 and os.clock() - scanStart > FIND_SCAN_BUDGET then
+					if ops % 50 == 0 and os.clock() - scanStart > FIND_SCAN_BUDGET then
 						task.wait()
 						if scanToken ~= self.FindScanToken then return end
 						scanStart = os.clock()
 					end
 				end
 				if self.FindMatchesCapped then break end
-				if lineIndex % 500 == 0 and os.clock() - scanStart > FIND_SCAN_BUDGET then
+				if lineIndex % 200 == 0 and os.clock() - scanStart > FIND_SCAN_BUDGET then
 					task.wait()
 					if scanToken ~= self.FindScanToken then return end
 					scanStart = os.clock()
