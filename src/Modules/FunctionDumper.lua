@@ -68,6 +68,8 @@ local function main()
 	local functionCallConn
 	local lastCallTarget
 	local blockRefreshQueued = false
+	local connectionSignalCache = {}
+	local connectionSignalCacheTime = 0
 
 	-- Color theme for value types
 	local TYPE_COLORS = {
@@ -105,6 +107,26 @@ local function main()
 	functionBlockState.BlockActions = functionBlockState.BlockActions or 0
 	functionBlockState.UnblockActions = functionBlockState.UnblockActions or 0
 	functionBlockState.TotalBlockedCalls = functionBlockState.TotalBlockedCalls or 0
+
+	local CONNECTION_SCAN_BUDGET = 0.006
+	local CONNECTION_SIGNAL_CACHE_TTL = 4
+	local CONNECTION_REFRESH_INTERVAL = 1
+	local CONNECTION_INSTANCE_LIMIT = 1500
+	local CONNECTION_SIGNAL_LIMIT = 5000
+	local CONNECTION_SIGNAL_NAMES = {
+		"Changed", "ChildAdded", "ChildRemoved", "DescendantAdded", "DescendantRemoving", "AncestryChanged", "Destroying",
+		"Touched", "TouchEnded", "Activated", "Triggered", "PromptShown", "PromptHidden",
+		"InputBegan", "InputChanged", "InputEnded", "MouseEnter", "MouseLeave",
+		"MouseButton1Click", "MouseButton1Down", "MouseButton1Up", "MouseButton2Click", "MouseButton2Down", "MouseButton2Up",
+		"Focused", "FocusLost", "SelectionChanged", "TextChanged",
+		"Button1Down", "Button1Up", "Button2Down", "Button2Up", "KeyDown", "KeyUp", "Move", "Idle",
+		"Heartbeat", "Stepped", "RenderStepped", "PreSimulation", "PostSimulation", "PreRender",
+		"PlayerAdded", "PlayerRemoving", "CharacterAdded", "CharacterRemoving", "Chatted",
+		"Died", "HealthChanged", "StateChanged", "Running", "Jumping", "Seated", "Climbing", "Swimming",
+		"Equipped", "Unequipped", "AnimationPlayed", "AnimationTrackPlayed", "Stopped", "Ended", "DidLoop",
+		"Completed", "PlaybackStateChanged", "Played", "Paused", "Resumed",
+		"OnClientEvent", "Event"
+	}
 
 	local function getTypeColor(valType)
 		return TYPE_COLORS[valType] or Color3.fromRGB(200, 200, 200)
@@ -589,6 +611,296 @@ local function main()
 		return table.concat(parts, ", ")
 	end
 
+	local function getConnectionApi()
+		return (env and env.getconnections) or getconnections
+	end
+
+	local function getObjectPathText(obj)
+		if typeof(obj) ~= "Instance" then
+			return safeToString(obj, 120)
+		end
+
+		local ok, path = pcall(function()
+			if Explorer and Explorer.GetInstancePath then
+				return Explorer.GetInstancePath(obj)
+			end
+			return obj:GetFullName()
+		end)
+		return ok and path or safeToString(obj, 120)
+	end
+
+	local function addSignalOwner(owners, seenOwners, owner)
+		if typeof(owner) ~= "Instance" or seenOwners[owner] then return end
+		seenOwners[owner] = true
+		owners[#owners + 1] = owner
+	end
+
+	local function getSignalOwners(shouldContinue)
+		local owners = {}
+		local seenOwners = {}
+		local queuedOwners = {}
+		local queue = {}
+		local queueHead = 1
+		local root = oldgame or game
+
+		local function queueSignalOwner(owner)
+			if typeof(owner) ~= "Instance" or queuedOwners[owner] then return end
+			queuedOwners[owner] = true
+			queue[#queue + 1] = owner
+		end
+
+		addSignalOwner(owners, seenOwners, root)
+		addSignalOwner(owners, seenOwners, workspace)
+		queueSignalOwner(workspace)
+		if targetScript then
+			addSignalOwner(owners, seenOwners, targetScript)
+			queueSignalOwner(targetScript)
+		end
+
+		local serviceNames = {
+			"Players", "RunService", "UserInputService", "ContextActionService", "GuiService", "TweenService",
+			"Lighting", "ReplicatedStorage", "ReplicatedFirst", "StarterGui", "StarterPlayer", "SoundService",
+			"TextChatService", "CollectionService", "Workspace", "CoreGui"
+		}
+		for _, serviceName in ipairs(serviceNames) do
+			pcall(function()
+				local serviceOwner = root:GetService(serviceName)
+				addSignalOwner(owners, seenOwners, serviceOwner)
+				queueSignalOwner(serviceOwner)
+			end)
+		end
+
+		local scanStart = os.clock()
+		while queueHead <= #queue and #owners < CONNECTION_INSTANCE_LIMIT do
+			local owner = queue[queueHead]
+			queueHead = queueHead + 1
+
+			local ok, children = pcall(function()
+				return owner:GetChildren()
+			end)
+			if ok and children then
+				for _, child in ipairs(children) do
+					addSignalOwner(owners, seenOwners, child)
+					queueSignalOwner(child)
+					if #owners >= CONNECTION_INSTANCE_LIMIT then
+						break
+					end
+				end
+			end
+
+			if os.clock() - scanStart > CONNECTION_SCAN_BUDGET then
+				task.wait()
+				if shouldContinue and not shouldContinue() then
+					return nil
+				end
+				scanStart = os.clock()
+			end
+		end
+
+		return owners
+	end
+
+	local function collectSignalCandidates(forceRefresh, shouldContinue)
+		local now = tick()
+		if not forceRefresh and #connectionSignalCache > 0 and now - connectionSignalCacheTime < CONNECTION_SIGNAL_CACHE_TTL then
+			return connectionSignalCache
+		end
+
+		local candidates = {}
+		local seenSignals = {}
+		local owners = getSignalOwners(shouldContinue)
+		if not owners then
+			return nil
+		end
+		local scanStart = os.clock()
+
+		for ownerIndex = 1, #owners do
+			local owner = owners[ownerIndex]
+			for _, signalName in ipairs(CONNECTION_SIGNAL_NAMES) do
+				local ok, signal = pcall(function()
+					return owner[signalName]
+				end)
+				if ok and typeof(signal) == "RBXScriptSignal" and not seenSignals[signal] then
+					seenSignals[signal] = true
+					candidates[#candidates + 1] = {
+						Owner = owner,
+						Signal = signal,
+						SignalName = signalName,
+						Path = getObjectPathText(owner) .. "." .. signalName
+					}
+					if #candidates >= CONNECTION_SIGNAL_LIMIT then
+						break
+					end
+				end
+			end
+
+			if #candidates >= CONNECTION_SIGNAL_LIMIT then
+				break
+			end
+			if os.clock() - scanStart > CONNECTION_SCAN_BUDGET then
+				task.wait()
+				if shouldContinue and not shouldContinue() then
+					return nil
+				end
+				scanStart = os.clock()
+			end
+		end
+
+		connectionSignalCache = candidates
+		connectionSignalCacheTime = now
+		return candidates
+	end
+
+	local function getConnectionFunction(connection)
+		local ok, func = pcall(function()
+			return connection.Function
+		end)
+		if ok and typeof(func) == "function" then
+			return func
+		end
+	end
+
+	local function connectionMatchesFunction(connection, func)
+		local connectionFunc = getConnectionFunction(connection)
+		return connectionFunc == func
+	end
+
+	local function getConnectionEnabled(connection)
+		local ok, enabled = pcall(function()
+			return connection.Enabled
+		end)
+		if ok and enabled ~= nil then
+			return enabled and true or false
+		end
+		return true
+	end
+
+	local function makeConnectionNode(folder, candidate, connection, index)
+		local enabled = getConnectionEnabled(connection)
+		local node = {
+			Name = ("[%d] %s %s"):format(index, enabled and "Enabled" or "Disabled", candidate.Path),
+			Type = "Connection",
+			Depth = folder.Depth + 1,
+			Parent = folder,
+			Children = {},
+			Connection = connection,
+			Signal = candidate.Signal,
+			SignalName = candidate.SignalName,
+			SignalOwner = candidate.Owner,
+			SignalPath = candidate.Path,
+			Value = connection,
+			ValueType = "RBXScriptConnection",
+			Enabled = enabled,
+			Func = folder.Func
+		}
+		node.Path = folder.Path .. "/" .. tostring(index)
+		return node
+	end
+
+	local function setConnectionFolderLoading(folder, text)
+		folder.Children = {{
+			Name = text,
+			Type = "Metadata",
+			Depth = folder.Depth + 1,
+			Parent = folder,
+			Children = {},
+			Value = "Live signal scan",
+			ValueType = "string",
+			Path = folder.Path .. "/status"
+		}}
+		folder.ChildrenLoaded = true
+	end
+
+	FunctionDumper.RefreshConnectionFolder = function(folder, forceSignalRefresh)
+		local getconnectionsFn = getConnectionApi()
+		if not getconnectionsFn then
+			folder.Name = "Connections (getconnections unsupported)"
+			setConnectionFolderLoading(folder, "getconnections unsupported")
+			return
+		end
+		if folder.ConnectionScanRunning then return end
+
+		folder.ConnectionScanRunning = true
+		folder.ConnectionScanToken = (folder.ConnectionScanToken or 0) + 1
+		local scanToken = folder.ConnectionScanToken
+		setConnectionFolderLoading(folder, "Scanning live connections...")
+
+		task.spawn(function()
+			local function stillCurrent()
+				return folder.ConnectionScanToken == scanToken
+			end
+
+			local candidates = collectSignalCandidates(forceSignalRefresh, stillCurrent)
+			if not candidates or not stillCurrent() then
+				folder.ConnectionScanRunning = false
+				return
+			end
+
+			local children = {}
+			local scanStart = os.clock()
+			for i = 1, #candidates do
+				local candidate = candidates[i]
+				local ok, connections = pcall(getconnectionsFn, candidate.Signal)
+				if ok and connections then
+					for _, connection in ipairs(connections) do
+						if connectionMatchesFunction(connection, folder.Func) then
+							children[#children + 1] = makeConnectionNode(folder, candidate, connection, #children + 1)
+						end
+					end
+				end
+
+				if os.clock() - scanStart > CONNECTION_SCAN_BUDGET then
+					task.wait()
+					if not stillCurrent() then
+						folder.ConnectionScanRunning = false
+						return
+					end
+					scanStart = os.clock()
+				end
+			end
+
+			folder.ConnectionScanRunning = false
+			folder.ConnectionCount = #children
+			folder.Name = ("Connections (%d live)"):format(#children)
+			if #children == 0 then
+				setConnectionFolderLoading(folder, "No live connections found")
+			else
+				folder.Children = children
+				folder.ChildrenLoaded = true
+			end
+
+			if window and window.IsContentVisible and window:IsContentVisible() then
+				FunctionDumper.Flatten()
+				FunctionDumper.UpdateView()
+				FunctionDumper.Refresh()
+			end
+		end)
+	end
+
+	local function startConnectionFolderWatcher(folder)
+		if folder.ConnectionWatching then return end
+		folder.ConnectionWatching = true
+		folder.ConnectionWatchToken = (folder.ConnectionWatchToken or 0) + 1
+		local watchToken = folder.ConnectionWatchToken
+
+		task.spawn(function()
+			while folder.Expanded and folder.ConnectionWatchToken == watchToken do
+				FunctionDumper.RefreshConnectionFolder(folder, false)
+				local waited = 0
+				while waited < CONNECTION_REFRESH_INTERVAL do
+					task.wait(0.1)
+					waited = waited + 0.1
+					if not folder.Expanded or folder.ConnectionWatchToken ~= watchToken then
+						break
+					end
+				end
+			end
+			if folder.ConnectionWatchToken == watchToken then
+				folder.ConnectionWatching = false
+			end
+		end)
+	end
+
 	local function loadNodeChildren(node)
 		if node.ChildrenLoaded then return end
 		node.ChildrenLoaded = true
@@ -691,7 +1003,21 @@ local function main()
 				node.Children[#node.Children + 1] = constantsFolder
 			end
 
-			-- 3. Metadata Folder
+			-- 3. Live Connections Folder
+			local connectionsFolder = {
+				Name = "Connections (live)",
+				Type = "ConnectionsFolder",
+				Depth = depth,
+				Expanded = expandedByPath[node.Path .. "/Connections"] or false,
+				Parent = node,
+				Children = {},
+				ChildrenLoaded = false,
+				Func = func
+			}
+			connectionsFolder.Path = node.Path .. "/Connections"
+			node.Children[#node.Children + 1] = connectionsFolder
+
+			-- 4. Metadata Folder
 			local metaList = {}
 			local s3, info = pcall(getinfo, func)
 			if s3 and info then
@@ -727,7 +1053,7 @@ local function main()
 				node.Children[#node.Children + 1] = metaFolder
 			end
 
-			-- 4. Prototypes Folder
+			-- 5. Prototypes Folder
 			local protosList = {}
 			local getprotos = (debug and debug.getprotos) or getprotos
 			if getprotos then
@@ -826,6 +1152,11 @@ local function main()
 					tList[#tList + 1] = tbVal
 				end
 				node.Children = tList
+			end
+		elseif node.Type == "ConnectionsFolder" then
+			FunctionDumper.RefreshConnectionFolder(node, false)
+			if node.Expanded then
+				startConnectionFolderWatcher(node)
 			end
 		end
 	end
@@ -1067,6 +1398,14 @@ local function main()
 			if not node then return end
 			node.Expanded = not node.Expanded
 			expandedByPath[node.Path] = node.Expanded
+			if node.Type == "ConnectionsFolder" then
+				if node.Expanded then
+					FunctionDumper.RefreshConnectionFolder(node, false)
+					startConnectionFolderWatcher(node)
+				else
+					node.ConnectionWatchToken = (node.ConnectionWatchToken or 0) + 1
+				end
+			end
 			FunctionDumper.Flatten()
 			FunctionDumper.UpdateView()
 			FunctionDumper.Refresh()
@@ -1344,6 +1683,96 @@ local function main()
 		end)
 	end
 
+	local function refreshAfterConnectionAction(node, message)
+		if statusLabel and message then
+			statusLabel.Text = message
+		end
+		local folder = node and (node.Type == "ConnectionsFolder" and node or node.Parent)
+		if folder and folder.Type == "ConnectionsFolder" then
+			FunctionDumper.RefreshConnectionFolder(folder, true)
+		end
+		FunctionDumper.Refresh()
+	end
+
+	local function callConnectionMethod(connection, methodName)
+		local ok, method = pcall(function()
+			return connection[methodName]
+		end)
+		if ok and method then
+			return pcall(function()
+				return method(connection)
+			end)
+		end
+		return false, methodName .. " is not supported"
+	end
+
+	FunctionDumper.SetConnectionEnabled = function(node, enabled)
+		if not node or node.Type ~= "Connection" or not node.Connection then return end
+		local ok, err
+		if enabled then
+			ok, err = callConnectionMethod(node.Connection, "Enable")
+		else
+			ok, err = callConnectionMethod(node.Connection, "Disable")
+		end
+		if not ok then
+			ok, err = pcall(function()
+				node.Connection.Enabled = enabled
+			end)
+		end
+		refreshAfterConnectionAction(node, ok and (enabled and "Connection enabled" or "Connection disabled") or ("Connection toggle failed: " .. tostring(err)))
+	end
+
+	FunctionDumper.FireConnection = function(node)
+		if not node or node.Type ~= "Connection" or not node.Connection then return end
+		local ok, err = callConnectionMethod(node.Connection, "Fire")
+		if not ok then
+			ok, err = callConnectionMethod(node.Connection, "Defer")
+		end
+		refreshAfterConnectionAction(node, ok and "Connection fired" or ("Connection fire failed: " .. tostring(err)))
+	end
+
+	FunctionDumper.DisconnectConnection = function(node)
+		if not node or node.Type ~= "Connection" or not node.Connection then return end
+		local ok, err = callConnectionMethod(node.Connection, "Disconnect")
+		refreshAfterConnectionAction(node, ok and "Connection disconnected" or ("Connection disconnect failed: " .. tostring(err)))
+	end
+
+	local function getConnectionsFolderFromNode(node)
+		if not node then return end
+		if node.Type == "ConnectionsFolder" then
+			return node
+		elseif node.Type == "Connection" and node.Parent and node.Parent.Type == "ConnectionsFolder" then
+			return node.Parent
+		end
+
+		local func = getNodeFunction(node)
+		if not func then return end
+		loadNodeChildren(node)
+		for _, child in ipairs(node.Children or {}) do
+			if child.Type == "ConnectionsFolder" then
+				return child
+			end
+		end
+	end
+
+	FunctionDumper.ShowLiveConnections = function(node, forceRefresh)
+		local folder = getConnectionsFolderFromNode(node)
+		if not folder then return end
+		local parent = folder.Parent
+		if parent then
+			parent.Expanded = true
+			expandedByPath[parent.Path] = true
+		end
+		folder.Expanded = true
+		expandedByPath[folder.Path] = true
+		folder.ChildrenLoaded = false
+		FunctionDumper.RefreshConnectionFolder(folder, forceRefresh)
+		startConnectionFolderWatcher(folder)
+		FunctionDumper.Flatten()
+		FunctionDumper.UpdateView()
+		FunctionDumper.Refresh()
+	end
+
 	FunctionDumper.SetEditingNode = function(node, idx)
 		editingNode = node
 		local entry = listEntries[idx]
@@ -1387,7 +1816,7 @@ local function main()
 			local node = tree[i + FunctionDumper.Index]
 			if node then
 				local depth = node.Depth
-				local nodeFunc = getNodeFunction(node)
+				local nodeFunc = getNodeFunction(node) or ((node.Type == "ConnectionsFolder" or node.Type == "Connection") and node.Func)
 				local editableType = getEditableType(node)
 				local blockEntry = nodeFunc and getFunctionBlockEntry(nodeFunc, false)
 				local isBlocked = blockEntry and blockEntry.Blocked
@@ -1412,7 +1841,7 @@ local function main()
 						entry.Name.Size = UDim2.new(1, -(depth * INDENT + NAME_OFF) - 2, 1, 0)
 						entry.ValueLabel.Visible = false
 					end
-				elseif editableType or node.Type == "Metadata" then
+				elseif editableType or node.Type == "Metadata" or node.Type == "Connection" then
 					entry.Name.TextColor3 = isBlocked and Color3.fromRGB(255, 95, 95) or Color3.fromRGB(150, 150, 150)
 					local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
 					entry.Name.Size = UDim2.new(0, nameSize + 4, 1, 0)
@@ -1422,6 +1851,9 @@ local function main()
 					if isBlocked then
 						entry.ValueLabel.Text = ("BLOCKED (%d) "):format(blockEntry.BlockedCalls or 0) .. formatNodeValue(node)
 						entry.ValueLabel.TextColor3 = Color3.fromRGB(255, 95, 95)
+					elseif node.Type == "Connection" then
+						entry.ValueLabel.Text = (node.Enabled and "= live" or "= disabled") .. " " .. safeToString(node.Connection, 120)
+						entry.ValueLabel.TextColor3 = node.Enabled and Color3.fromRGB(90, 220, 120) or Color3.fromRGB(220, 90, 90)
 					else
 						entry.ValueLabel.Text = formatNodeValue(node)
 						entry.ValueLabel.TextColor3 = getTypeColor(node.ValueType)
@@ -1448,10 +1880,11 @@ local function main()
 				entry.Icon.Position = UDim2.new(0, depth * INDENT + ICON_OFF, 0, 2)
 				local iconKey = "Empty"
 				if node.Type == "Function" then iconKey = "ViewScript"
-				elseif node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "MetadataFolder" or node.Type == "PrototypesFolder" then iconKey = "Group"
+				elseif node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "MetadataFolder" or node.Type == "PrototypesFolder" or node.Type == "ConnectionsFolder" then iconKey = "Group"
 				elseif node.Type == "Upvalue" then iconKey = "Reference"
 				elseif node.Type == "Constant" then iconKey = "SelectChildren"
 				elseif node.Type == "Metadata" then iconKey = "ExploreData"
+				elseif node.Type == "Connection" then iconKey = node.Enabled and "Play" or "Pause"
 				elseif node.ValueType == "table" then iconKey = "Honey"
 				elseif node.ValueType == "function" then iconKey = "CallFunction"
 				end
@@ -1484,7 +1917,7 @@ local function main()
 				local canExpand = false
 				if node.Type == "Function" then
 					canExpand = true
-				elseif node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "MetadataFolder" then
+				elseif node.Type == "UpvaluesFolder" or node.Type == "ConstantsFolder" or node.Type == "MetadataFolder" or node.Type == "ConnectionsFolder" then
 					canExpand = true
 				elseif node.ValueType == "table" or node.ValueType == "function" then
 					canExpand = true
@@ -1520,7 +1953,68 @@ local function main()
 		if not selectedNode then return end
 		context:Clear()
 
-		local selectedFunc = getNodeFunction(selectedNode)
+		if selectedNode.Type == "Connection" then
+			if selectedNode.Enabled then
+				context:Add({
+					Name = "Disable Connection",
+					IconMap = Main.MiscIcons,
+					Icon = "Pause",
+					OnClick = function()
+						FunctionDumper.SetConnectionEnabled(selectedNode, false)
+					end
+				})
+			else
+				context:Add({
+					Name = "Enable Connection",
+					IconMap = Main.MiscIcons,
+					Icon = "Play",
+					OnClick = function()
+						FunctionDumper.SetConnectionEnabled(selectedNode, true)
+					end
+				})
+			end
+			context:Add({
+				Name = "Fire Connection",
+				IconMap = Main.MiscIcons,
+				Icon = "CallFunction",
+				OnClick = function()
+					FunctionDumper.FireConnection(selectedNode)
+				end
+			})
+			context:Add({
+				Name = "Disconnect Connection",
+				IconMap = Main.MiscIcons,
+				Icon = "Delete",
+				OnClick = function()
+					FunctionDumper.DisconnectConnection(selectedNode)
+				end
+			})
+			context:Add({
+				Name = "Copy Signal Path",
+				IconMap = Main.MiscIcons,
+				Icon = "Copy",
+				OnClick = function()
+					local clipboard = setclipboard or writeclipboard
+					if clipboard then
+						pcall(clipboard, selectedNode.SignalPath or selectedNode.Name)
+					end
+				end
+			})
+			context:AddDivider()
+		elseif selectedNode.Type == "ConnectionsFolder" then
+			context:Add({
+				Name = "Refresh Live Connections",
+				IconMap = Main.MiscIcons,
+				Icon = "Reference",
+				OnClick = function()
+					FunctionDumper.RefreshConnectionFolder(selectedNode, true)
+					startConnectionFolderWatcher(selectedNode)
+				end
+			})
+			context:AddDivider()
+		end
+
+		local selectedFunc = getNodeFunction(selectedNode) or ((selectedNode.Type == "ConnectionsFolder" or selectedNode.Type == "Connection") and selectedNode.Func)
 		if selectedFunc then
 			context:Add({
 				Name = "Call / Fire Function",
@@ -1528,6 +2022,14 @@ local function main()
 				Icon = "CallFunction",
 				OnClick = function()
 					FunctionDumper.PromptCallFunction(selectedFunc, selectedNode)
+				end
+			})
+			context:Add({
+				Name = "Show Live Connections",
+				IconMap = Main.MiscIcons,
+				Icon = "Reference",
+				OnClick = function()
+					FunctionDumper.ShowLiveConnections(selectedNode, true)
 				end
 			})
 
@@ -1674,6 +2176,14 @@ local function main()
 				else
 					node.Expanded = not node.Expanded
 					expandedByPath[node.Path] = node.Expanded
+					if node.Type == "ConnectionsFolder" then
+						if node.Expanded then
+							FunctionDumper.RefreshConnectionFolder(node, false)
+							startConnectionFolderWatcher(node)
+						else
+							node.ConnectionWatchToken = (node.ConnectionWatchToken or 0) + 1
+						end
+					end
 					FunctionDumper.Flatten()
 					FunctionDumper.UpdateView()
 					FunctionDumper.Refresh()
