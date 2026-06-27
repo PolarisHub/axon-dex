@@ -168,6 +168,7 @@ local function main()
 		ScriptViewer.Window = window
 
 		codeFrame = Lib.CodeFrame.new()
+		ScriptViewer.codeFrame = codeFrame
 		codeFrame.Frame.Position = UDim2.new(0,0,0,20)
 		codeFrame.Frame.Size = UDim2.new(1,0,1,-40)
 		codeFrame.Frame.Parent = window.GuiElems.Content
@@ -266,6 +267,7 @@ local function main()
 		clear.TextColor3 = Color3.new(1,1,1)
 
 		clear.MouseButton1Click:Connect(function()
+			codeFrame.OwnerScript = nil
 			codeFrame:SetText("")
 		end)
 	end
@@ -279,6 +281,7 @@ local function main()
 
 			if not s or not source then
 				PreviousScr = nil
+				codeFrame.OwnerScript = nil
 				dumpbtn.TextColor3 = Color3.new(0.5,0.5,0.5)
 				source = "-- Unable to view source.\n"
 
@@ -313,6 +316,7 @@ local function main()
 			end
 
 			Lib.HideLoading(window.GuiElems.Content)
+			codeFrame.OwnerScript = scr
 			codeFrame:SetText(source)
 			if lineIndex then
 				task.defer(function()

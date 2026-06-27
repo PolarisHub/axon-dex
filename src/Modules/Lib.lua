@@ -3876,6 +3876,27 @@ local function main()
 	Lib.CodeFrame = (function()
 		local funcs = {}
 
+		local function getWordAt(lineText, col)
+			if col < 1 or col > #lineText then return nil end
+			local left = col
+			while left > 1 do
+				local char = lineText:sub(left - 1, left - 1)
+				if not char:match("[%w_]") then break end
+				left = left - 1
+			end
+			local right = col
+			while right < #lineText do
+				local char = lineText:sub(right + 1, right + 1)
+				if not char:match("[%w_]") then break end
+				right = right + 1
+			end
+			local word = lineText:sub(left, right)
+			if word:match("^[%a_][%w_]*$") then
+				return word, left, right
+			end
+			return nil
+		end
+
 		local typeMap = {
 			[1] = "String",
 			[2] = "String",
@@ -4116,6 +4137,79 @@ local function main()
 			local codeFrame = obj.GuiElems.LinesFrame
 			local lines = obj.Lines
 
+			local hoverHighlight = Instance.new("Frame")
+			hoverHighlight.Name = "HoverHighlight"
+			hoverHighlight.BackgroundColor3 = Settings.Theme.Highlight
+			hoverHighlight.BackgroundTransparency = 0.85
+			hoverHighlight.BorderSizePixel = 0
+			hoverHighlight.Visible = false
+			hoverHighlight.ZIndex = 1
+			hoverHighlight.Parent = codeFrame
+
+			local hhCorner = Instance.new("UICorner")
+			hhCorner.CornerRadius = UDim.new(0, 2)
+			hhCorner.Parent = hoverHighlight
+
+			codeFrame.InputChanged:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseMovement then
+					local fontSizeX, fontSizeY = math.ceil(obj.FontSize/2), obj.FontSize
+					local relX = input.Position.X - codeFrame.AbsolutePosition.X
+					local relY = input.Position.Y - codeFrame.AbsolutePosition.Y
+
+					local totalLinesStr = tostring(#lines)
+					local linesOffset = #totalLinesStr*fontSizeX + 4*fontSizeX
+					
+					local charX = relX - linesOffset
+					local selX = math.floor(charX / fontSizeX) + obj.ViewX
+					local selY = math.floor(relY / fontSizeY) + obj.ViewY
+
+					local lineText = lines[selY + 1]
+					if lineText then
+						local word, left, right = getWordAt(lineText, selX + 1)
+						if word and not keywords[word] then
+							local posX = linesOffset + (left - 1 - obj.ViewX) * fontSizeX
+							local posY = (selY - obj.ViewY) * fontSizeY
+							local sizeX = (right - left + 1) * fontSizeX
+							
+							hoverHighlight.Position = UDim2.new(0, posX, 0, posY)
+							hoverHighlight.Size = UDim2.new(0, sizeX, 0, fontSizeY)
+							hoverHighlight.Visible = true
+						else
+							hoverHighlight.Visible = false
+						end
+					else
+						hoverHighlight.Visible = false
+					end
+				end
+			end)
+
+			codeFrame.MouseLeave:Connect(function()
+				hoverHighlight.Visible = false
+			end)
+
+			codeFrame.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton2 then
+					local fontSizeX, fontSizeY = math.ceil(obj.FontSize/2), obj.FontSize
+					local relX = input.Position.X - codeFrame.AbsolutePosition.X
+					local relY = input.Position.Y - codeFrame.AbsolutePosition.Y
+
+					local totalLinesStr = tostring(#lines)
+					local linesOffset = #totalLinesStr*fontSizeX + 4*fontSizeX
+					
+					local charX = relX - linesOffset
+					local selX = math.floor(charX / fontSizeX) + obj.ViewX
+					local selY = math.floor(relY / fontSizeY) + obj.ViewY
+
+					local lineText = lines[selY + 1]
+					if lineText then
+						local word, left, right = getWordAt(lineText, selX + 1)
+						if word then
+							obj:ShowCodeContextMenu(word, selY + 1, input.Position)
+						end
+					end
+				end
+			end)
+
 			codeFrame.InputBegan:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 					local fontSizeX,fontSizeY = math.ceil(obj.FontSize/2),obj.FontSize
@@ -4300,6 +4394,167 @@ local function main()
 			editBox.SelectionStart = 1
 			editBox.CursorPosition = #editBox.Text + 1
 			self.EditBoxCopying = false
+		end
+
+		funcs.ShowCodeContextMenu = function(self, word, lineIndex, position)
+			local context = self.ContextMenu
+			if not context then
+				context = Lib.ContextMenu.new()
+				self.ContextMenu = context
+			end
+			context:Clear()
+
+			context:Add({
+				Name = "Copy '" .. word .. "'",
+				IconMap = Main.MiscIcons,
+				Icon = "Copy",
+				OnClick = function()
+					pcall(setclipboard or writeclipboard, word)
+				end
+			})
+
+			local refLines = {}
+			for idx, text in ipairs(self.Lines) do
+				if text:find("%f[%w_]" .. word .. "%f[^%w_]") then
+					refLines[#refLines + 1] = {Line = idx, Text = text}
+				end
+			end
+
+			if #refLines > 0 then
+				local refsMenu = Lib.ContextMenu.new()
+				for i = 1, math.min(#refLines, 15) do
+					local item = refLines[i]
+					local cleanText = item.Text:match("^%s*(.-)%s*$")
+					if #cleanText > 40 then
+						cleanText = cleanText:sub(1, 37) .. "..."
+					end
+					refsMenu:Add({
+						Name = ("L%d: %s"):format(item.Line, cleanText),
+						OnClick = function()
+							self:MoveCursor(0, item.Line - 1)
+						end
+					})
+				end
+				if #refLines > 15 then
+					refsMenu:Add({
+						Name = ("... and %d more references"):format(#refLines - 15),
+						OnClick = function() end
+					})
+				end
+				context:Add({
+					Name = "Find References (" .. #refLines .. ")",
+					IconMap = Main.MiscIcons,
+					Icon = "Reference",
+					SubMenu = refsMenu
+				})
+			end
+
+			local isBuiltIn = builtIns[word] ~= nil
+			if isBuiltIn then
+				context:Add({
+					Name = "Search API Documentation",
+					IconMap = Main.MiscIcons,
+					Icon = "ExploreData",
+					OnClick = function()
+						pcall(setclipboard or writeclipboard, "https://create.roblox.com/docs/search?query=" .. word)
+						warn("[Axon Notepad] Search link copied to clipboard: https://create.roblox.com/docs/search?query=" .. word)
+					end
+				})
+			end
+
+			context:Add({
+				Name = "Dump Function '" .. word .. "'",
+				IconMap = Main.MiscIcons,
+				Icon = "CallFunction",
+				OnClick = function()
+					local scr = self.OwnerScript
+					if scr and Apps.FunctionDumper then
+						task.spawn(function()
+							local getinfo = (debug and (debug.getinfo or debug.info)) or getinfo
+							local gc = env.getgc()
+							local targetFunc
+							for i = 1, #gc do
+								local val = gc[i]
+								if typeof(val) == "function" then
+									local s, envTable = pcall(getfenv, val)
+									if s and envTable.script == scr then
+										local s2, inf = pcall(getinfo, val)
+										if s2 and inf and (inf.name == word) then
+											targetFunc = val
+											break
+										end
+									end
+								end
+							end
+
+							Apps.FunctionDumper.Dump(scr)
+
+							if targetFunc then
+								task.wait(0.5)
+								if Apps.FunctionDumper.SelectFunction then
+									Apps.FunctionDumper.SelectFunction(targetFunc)
+								end
+							end
+						end)
+					end
+				end
+			})
+
+			if Apps.DecompilerHelper then
+				context:Add({
+					Name = "Find References (XREFs)",
+					IconMap = Main.MiscIcons,
+					Icon = "Reference",
+					OnClick = function()
+						Apps.DecompilerHelper.Toggle(true)
+						Apps.DecompilerHelper.SelectTab("XREFs")
+						Apps.DecompilerHelper.ShowXRefs(word, lineIndex, self)
+					end
+				})
+				context:Add({
+					Name = "Rename Symbol",
+					IconMap = Main.MiscIcons,
+					Icon = "Rename",
+					OnClick = function()
+						Apps.DecompilerHelper.RenameSymbol(word, self)
+					end
+				})
+				context:Add({
+					Name = "Extract Function Body",
+					IconMap = Main.MiscIcons,
+					Icon = "Cut",
+					OnClick = function()
+						Apps.DecompilerHelper.ExtractFunctionBody(word, self)
+					end
+				})
+				context:Add({
+					Name = "Call / Hook Closure",
+					IconMap = Main.MiscIcons,
+					Icon = "CallFunction",
+					OnClick = function()
+						Apps.DecompilerHelper.Toggle(true)
+						Apps.DecompilerHelper.SelectTab("CallConsole")
+					end
+				})
+			end
+
+			if self.OwnerScript and Apps.EnvExplorer then
+				context:Add({
+					Name = "Disassemble Script",
+					IconMap = Main.MiscIcons,
+					Icon = "ExploreData",
+					OnClick = function()
+						Apps.EnvExplorer.Window:Show()
+						if Apps.EnvExplorer.SelectTab then
+							Apps.EnvExplorer.SelectTab("Disassembler")
+						end
+						Apps.EnvExplorer.Disassemble(self.OwnerScript)
+					end
+				})
+			end
+
+			local mouse = Main.Mouse
+			context:Show(position and position.X or mouse.X, position and position.Y or mouse.Y)
 		end
 
 		funcs.ConnectEditBoxEvent = function(self)

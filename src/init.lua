@@ -65,7 +65,7 @@ end
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, ScriptTree, RemoteTree, AssetTree, ScriptSearch, FunctionDumper, DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, ScriptTree, RemoteTree, AssetTree, ScriptSearch, FunctionDumper, EnvExplorer, DecompilerHelper, DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -208,7 +208,7 @@ end
 Main = (function()
 	local Main = {}
 
-	Main.ModuleList = {"Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","ScriptTree","RemoteTree","AssetTree","ScriptSearch","FunctionDumper"}
+	Main.ModuleList = {"Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","ScriptTree","RemoteTree","AssetTree","ScriptSearch","FunctionDumper","EnvExplorer","DecompilerHelper"}
 	Main.Elevated = false
 	Main.AllowDraggableOnMobile = true
 	Main.MissingEnv = {}
@@ -372,6 +372,8 @@ Main = (function()
 		AssetTree = Apps.AssetTree
 		ScriptSearch = Apps.ScriptSearch
 		FunctionDumper = Apps.FunctionDumper
+		EnvExplorer = Apps.EnvExplorer
+		DecompilerHelper = Apps.DecompilerHelper
 
 		local appTable = {
 			Explorer = Explorer,
@@ -386,7 +388,9 @@ Main = (function()
 			RemoteTree = RemoteTree,
 			AssetTree = AssetTree,
 			ScriptSearch = ScriptSearch,
-			FunctionDumper = FunctionDumper
+			FunctionDumper = FunctionDumper,
+			EnvExplorer = EnvExplorer,
+			DecompilerHelper = DecompilerHelper
 		}
 
 		Main.AppControls.Lib.InitAfterMain(appTable)
@@ -1473,6 +1477,8 @@ Main = (function()
 
 		Main.CreateApp({Name = "Function Dumper", IconMap = Main.LargeIcons, Icon = "Watcher", Window = FunctionDumper.Window})
 
+		Main.CreateApp({Name = "Env Explorer", IconMap = Main.LargeIcons, Icon = "Output", Window = EnvExplorer.Window})
+
 		for _, loadedplugin in pairs(Main.Plugins) do
 			Main.CreateApp({Name = loadedplugin.PluginData.FriendlyName, IconMap = Explorer.ClassIcons, Icon = "Attachment", Window = loadedplugin.Window})
 		end
@@ -1595,7 +1601,7 @@ Main = (function()
 		local initStart = tick()
 		local modulesToInit = {
 			Explorer, Properties, ScriptViewer, ScriptTree, Console,
-			SaveInstance, ModelViewer, SettingsWindow, RemoteTree, AssetTree, ScriptSearch, FunctionDumper
+			SaveInstance, ModelViewer, SettingsWindow, RemoteTree, AssetTree, ScriptSearch, FunctionDumper, EnvExplorer, DecompilerHelper
 		}
 		for i = 1, #modulesToInit do
 			modulesToInit[i].Init()

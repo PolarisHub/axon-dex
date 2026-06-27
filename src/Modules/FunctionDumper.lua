@@ -60,7 +60,7 @@ local function main()
 	local expandedByPath = {} -- persistent expand state by node path
 	local selectedNode
 	local editingNode
-	local editBox
+	local editBox, confirmBtn
 	local scanThread
 	local currentScanId = 0
 	local targetScript
@@ -606,8 +606,8 @@ local function main()
 		local expandIcon = createSimple("ImageLabel", {
 			Name = "Icon",
 			BackgroundTransparency = 1,
-			Size = UDim2.new(0, 10, 0, 10),
-			Position = UDim2.new(0, 3, 0, 5),
+			Size = UDim2.new(0, 12, 0, 12),
+			Position = UDim2.new(0, 2, 0, 4),
 			Parent = expand
 		})
 
@@ -696,11 +696,17 @@ local function main()
 		if not entry then return end
 
 		editBox.Text = tostring(node.Value)
-		local xPos = node.Depth * INDENT + NAME_OFF + 100
+		local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
+		local xPos = node.Depth * INDENT + NAME_OFF + nameSize + 8
+
 		editBox.Position = UDim2.new(0, xPos, 0, entry.Gui.Position.Y.Offset + 2)
-		editBox.Size = UDim2.new(1, -xPos - 8, 0, 16)
+		editBox.Size = UDim2.new(1, -xPos - 30, 0, 16)
 		editBox.Visible = true
 		editBox:CaptureFocus()
+
+		confirmBtn.Position = UDim2.new(1, -26, 0, entry.Gui.Position.Y.Offset)
+		confirmBtn.Size = UDim2.new(0, 20, 0, 20)
+		confirmBtn.Visible = true
 	end
 
 	FunctionDumper.Refresh = function()
@@ -748,7 +754,10 @@ local function main()
 					if editingNode == node then
 						local xPos = depth * INDENT + NAME_OFF + nameSize + 8
 						editBox.Position = UDim2.new(0, xPos, 0, entry.Gui.Position.Y.Offset + 2)
-						editBox.Size = UDim2.new(1, -xPos - 8, 0, 16)
+						editBox.Size = UDim2.new(1, -xPos - 30, 0, 16)
+
+						confirmBtn.Position = UDim2.new(1, -26, 0, entry.Gui.Position.Y.Offset)
+						confirmBtn.Size = UDim2.new(0, 20, 0, 20)
 						editingVisible = true
 					end
 				else -- Folder nodes
@@ -821,6 +830,7 @@ local function main()
 		end
 
 		editBox.Visible = editingVisible
+		confirmBtn.Visible = editingVisible
 	end
 
 	FunctionDumper.ShowContext = function(position)
@@ -873,6 +883,25 @@ local function main()
 			fNode = fNode.Parent
 		end
 		if fNode and fNode.Func then
+			local getinfo = (debug and (debug.getinfo or debug.info)) or getinfo
+			local lineDefined = 1
+			pcall(function()
+				local info = getinfo(fNode.Func)
+				if info and info.linedefined and info.linedefined > 0 then
+					lineDefined = info.linedefined
+				end
+			end)
+
+			context:Add({
+				Name = "Go to Definition",
+				IconMap = Main.MiscIcons,
+				Icon = "Play",
+				OnClick = function()
+					if targetScript then
+						ScriptViewer.ViewScript(targetScript, lineDefined)
+					end
+				end
+			})
 			context:Add({
 				Name = "Decompile Script",
 				IconMap = Main.MiscIcons,
@@ -982,6 +1011,50 @@ local function main()
 		})
 
 		editBox.Parent = listFrame
+
+		confirmBtn = createSimple("TextButton", {
+			BackgroundColor3 = Settings.Theme.Button,
+			BorderSizePixel = 0,
+			Font = Enum.Font.SourceSansBold,
+			Text = "",
+			Visible = false,
+			ZIndex = 4
+		})
+		local btnStroke = createSimple("UIStroke", {
+			Color = Settings.Theme.Outline2,
+			Thickness = 1.4,
+			Parent = confirmBtn
+		})
+		local btnCorner = createSimple("UICorner", {
+			CornerRadius = UDim.new(0, 2),
+			Parent = confirmBtn
+		})
+		local btnIcon = createSimple("ImageLabel", {
+			Name = "Icon",
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 12, 0, 12),
+			Position = UDim2.new(0.5, -6, 0.5, -6),
+			Parent = confirmBtn
+		})
+		Main.MiscIcons:DisplayByKey(btnIcon, "Rename")
+		confirmBtn.Parent = listFrame
+
+		confirmBtn.MouseButton1Click:Connect(function()
+			if editBox.Visible then
+				editBox:ReleaseFocus(true)
+			end
+		end)
+
+		confirmBtn.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+				btnStroke.Color = Settings.Theme.Highlight
+			end
+		end)
+		confirmBtn.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+				btnStroke.Color = Settings.Theme.Outline2
+			end
+		end)
 
 		editBox.FocusLost:Connect(function(enterPressed)
 			if not editingNode then return end
@@ -1271,6 +1344,29 @@ local function main()
 		FunctionDumper.InitClickSystem()
 		FunctionDumper.InitSearch()
 		FunctionDumper.InitEditBox()
+	end
+
+	FunctionDumper.SelectFunction = function(targetFunc)
+		for i = 1, #allFunctions do
+			local node = allFunctions[i]
+			if node.Func == targetFunc then
+				FunctionDumper.SetSelected(node)
+				local parent = node.Parent
+				while parent do
+					parent.Expanded = true
+					parent = parent.Parent
+				end
+				FunctionDumper.Flatten()
+				FunctionDumper.UpdateView()
+				FunctionDumper.Refresh()
+
+				local idx = table.find(tree, node)
+				if idx then
+					scrollV:ScrollTo(idx - 1)
+				end
+				break
+			end
+		end
 	end
 
 	return FunctionDumper
