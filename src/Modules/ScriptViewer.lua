@@ -285,12 +285,44 @@ local function main()
 		end)
 	end
 
+	ScriptViewer.GoToLine = function(lineIndex)
+		if not codeFrame then return end
+		local targetLine = math.max((tonumber(lineIndex) or 1) - 1, 0)
+
+		local function jump()
+			local lineCount = codeFrame.Lines and #codeFrame.Lines or 0
+			if lineCount > 0 then
+				targetLine = math.min(targetLine, lineCount - 1)
+			end
+			codeFrame.FloatCursorX = 0
+			if codeFrame.ScrollToLineCentred then
+				codeFrame:ScrollToLineCentred(targetLine)
+			elseif codeFrame.ScrollV then
+				codeFrame.ScrollV:ScrollTo(targetLine)
+				codeFrame.CursorX = 0
+				codeFrame.CursorY = targetLine
+				if codeFrame.UpdateCursor then codeFrame:UpdateCursor() end
+				if codeFrame.Refresh then codeFrame:Refresh() end
+			elseif codeFrame.MoveCursor then
+				codeFrame:MoveCursor(0, targetLine)
+			end
+		end
+
+		jump()
+		task.defer(jump)
+		if task.delay then
+			task.delay(0.08, jump)
+		end
+	end
+
 	ScriptViewer.ViewScript = function(scr, lineIndex)
 		window:Show()
 		Lib.ShowLoading(window.GuiElems.Content, "Decompiling script...")
 		task.spawn(function()
 			local oldtick = tick()
 			local s,source = pcall(env.decompile or function() end,scr)
+			local targetLineIndex = tonumber(lineIndex)
+			local viewerLineIndex = targetLineIndex
 
 			if not s or not source then
 				PreviousScr = nil
@@ -316,13 +348,18 @@ local function main()
 				local decompiled = source
 
 				source = "-- Script Path: "..getPath(scr).."\n"
+				local headerLineOffset = 1
 
 				if Settings.ScriptViewer.ShowMoreInfo then
 					source = source .. "-- Took "..tostring(math.floor( (tick() - oldtick) * 100) / 100).."s to decompile.\n"
 					source = source .. "-- Executor: "..executorName.." ("..executorVersion..")\n\n"
+					headerLineOffset = 4
 				end
 
 				source = source .. decompiled
+				if targetLineIndex then
+					viewerLineIndex = math.max(targetLineIndex + headerLineOffset, 1)
+				end
 
 				oldtick = nil
 				decompiled = nil
@@ -331,18 +368,8 @@ local function main()
 			Lib.HideLoading(window.GuiElems.Content)
 			codeFrame.OwnerScript = scr
 			codeFrame:SetText(source)
-			if lineIndex then
-				task.defer(function()
-					local targetLine = math.max((tonumber(lineIndex) or 1) - 1, 0)
-					if codeFrame.ScrollToLineCentred then
-						codeFrame:ScrollToLineCentred(targetLine)
-					elseif codeFrame.ScrollV then
-						codeFrame.ScrollV:ScrollTo(targetLine)
-					end
-					if codeFrame.MoveCursor then
-						codeFrame:MoveCursor(0, targetLine)
-					end
-				end)
+			if viewerLineIndex then
+				ScriptViewer.GoToLine(viewerLineIndex)
 			end
 		end)
 	end

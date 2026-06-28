@@ -60,6 +60,7 @@ local function main()
 	local expandedByPath = {} -- persistent expand state by node path
 	local selectedNode
 	local editingNode
+	local editingMode = "Value"
 	local editBox, confirmBtn
 	local scanThread
 	local currentScanId = 0
@@ -394,6 +395,124 @@ local function main()
 		return false, "use =expression to replace this " .. tostring(targetType)
 	end
 
+	local function parseLooseValue(valStr, allowExpressions)
+		if allowExpressions == nil then allowExpressions = true end
+		local raw = tostring(valStr or "")
+		local trimmed = trim(raw)
+		if trimmed == "" then
+			return true, ""
+		end
+		if trimmed:sub(1, 1) == "=" then
+			if not allowExpressions then
+				return false, "expression runs on confirm"
+			end
+			return parseExpression(trimmed:sub(2))
+		end
+		if trimmed == "nil" then return true, nil end
+		if trimmed == "true" then return true, true end
+		if trimmed == "false" then return true, false end
+
+		local numberValue = tonumber(trimmed)
+		if numberValue ~= nil then
+			return true, numberValue
+		end
+
+		local firstChar = trimmed:sub(1, 1)
+		if firstChar == "\"" or firstChar == "'" or firstChar == "{" or trimmed:sub(1, 8) == "function" then
+			if not allowExpressions then
+				return false, "literal runs on confirm"
+			end
+			return parseExpression(trimmed)
+		end
+
+		return true, raw
+	end
+
+	local function findClosingBracket(text)
+		local quote
+		local escape = false
+		local depth = 0
+		for i = 1, #text do
+			local ch = text:sub(i, i)
+			if quote then
+				if escape then
+					escape = false
+				elseif ch == "\\" then
+					escape = true
+				elseif ch == quote then
+					quote = nil
+				end
+			elseif ch == "\"" or ch == "'" then
+				quote = ch
+			elseif ch == "[" then
+				depth = depth + 1
+			elseif ch == "]" then
+				depth = depth - 1
+				if depth == 0 then
+					return i
+				end
+			end
+		end
+	end
+
+	local function parseTableAssignment(text, allowExpressions)
+		local trimmed = trim(text)
+		if trimmed == "" then
+			return false, "expected key = value"
+		end
+
+		local keyText, valueText, keyValue
+		if trimmed:sub(1, 1) == "[" then
+			local closeIndex = findClosingBracket(trimmed)
+			if not closeIndex then
+				return false, "missing closing ] for key expression"
+			end
+			keyText = trim(trimmed:sub(2, closeIndex - 1))
+			local rest = trim(trimmed:sub(closeIndex + 1))
+			if rest:sub(1, 1) ~= "=" then
+				return false, "expected = after key expression"
+			end
+			valueText = trim(rest:sub(2))
+			if keyText == "" then
+				return false, "key expression is empty"
+			end
+			if not allowExpressions then
+				return false, "key expression runs on confirm"
+			end
+			local ok, parsedKey = parseExpression(keyText)
+			if not ok then
+				return false, "key parse error: " .. tostring(parsedKey)
+			end
+			keyValue = parsedKey
+		else
+			local eqIndex = trimmed:find("=", 1, true)
+			if not eqIndex then
+				return false, "expected key = value"
+			end
+			keyText = trim(trimmed:sub(1, eqIndex - 1))
+			valueText = trim(trimmed:sub(eqIndex + 1))
+			if keyText == "" then
+				return false, "key is empty"
+			end
+			local ok, parsedKey = parseLooseValue(keyText, allowExpressions)
+			if not ok then
+				return false, "key parse error: " .. tostring(parsedKey)
+			end
+			keyValue = parsedKey
+		end
+
+		if valueText == "" then
+			return false, "value is empty"
+		end
+
+		local okValue, parsedValue = parseLooseValue(valueText, allowExpressions)
+		if not okValue then
+			return false, "value parse error: " .. tostring(parsedValue)
+		end
+
+		return true, keyValue, parsedValue
+	end
+
 	local function valueToEditText(value, valueType)
 		if valueType == "string" then
 			return tostring(value or "")
@@ -413,6 +532,15 @@ local function main()
 			return tostring(value)
 		end
 		return ""
+	end
+
+	local function keyToEditText(key)
+		local keyType = typeof(key)
+		local text = valueToEditText(key, keyType)
+		if text ~= "" then
+			return text
+		end
+		return safeToString(key, 120)
 	end
 
 	local function getEditPlaceholder(valueType)
@@ -1547,6 +1675,196 @@ local function main()
 		return false, err
 	end
 
+	FunctionDumper.RefreshNodeValue = function(node)
+		local editableType = getEditableType(node)
+		if not editableType then
+			return false, "node is not editable"
+		end
+
+		local ok, valueOrErr
+		if editableType == "Upvalue" then
+			local ownerFunc = getOwnerFunction(node)
+			local getupvalues = (debug and debug.getupvalues) or getupvalues or getupvals
+			if ownerFunc and getupvalues then
+				ok, valueOrErr = pcall(function()
+					local values = getupvalues(ownerFunc)
+					return values and values[node.Index]
+				end)
+			else
+				ok, valueOrErr = false, "debug.getupvalues is not supported by your executor"
+			end
+		elseif editableType == "Constant" then
+			local ownerFunc = getOwnerFunction(node)
+			local getconstants = (debug and debug.getconstants) or getconstants or getconsts
+			if ownerFunc and getconstants then
+				ok, valueOrErr = pcall(function()
+					local values = getconstants(ownerFunc)
+					return values and values[node.Index]
+				end)
+			else
+				ok, valueOrErr = false, "debug.getconstants is not supported by your executor"
+			end
+		elseif editableType == "TableValue" then
+			local targetTbl, key, tableErr = getTableWriteTarget(node)
+			if targetTbl ~= nil and key ~= nil then
+				ok, valueOrErr = pcall(function()
+					return targetTbl[key]
+				end)
+			else
+				ok, valueOrErr = false, tableErr or "could not find table key"
+			end
+		end
+
+		if ok then
+			local parent = node.Parent
+			syncEditedNode(node, valueOrErr)
+			if editableType == "TableValue" and valueOrErr == nil and parent then
+				parent.ChildrenLoaded = false
+				parent.Children = {}
+			end
+			if statusLabel then
+				statusLabel.Text = ("Refreshed %s value = <%s> %s"):format(editableType, typeof(valueOrErr), formatValue(valueOrErr, typeof(valueOrErr)))
+			end
+			FunctionDumper.Flatten()
+			FunctionDumper.UpdateView()
+			FunctionDumper.Refresh()
+			return true
+		end
+
+		if statusLabel then
+			statusLabel.Text = "Refresh failed: " .. tostring(valueOrErr)
+		end
+		return false, valueOrErr
+	end
+
+	FunctionDumper.RenameTableKey = function(node, newKey)
+		if getEditableType(node) ~= "TableValue" then
+			return false, "selected node is not a table member"
+		end
+		if newKey == nil then
+			return false, "table key cannot be nil"
+		end
+
+		local targetTbl, oldKey, tableErr = getTableWriteTarget(node)
+		if targetTbl == nil or oldKey == nil then
+			return false, tableErr or "could not find table key"
+		end
+		if oldKey == newKey then
+			return true
+		end
+
+		local value = node.Value
+		local success, err = pcall(function()
+			targetTbl[newKey] = value
+			targetTbl[oldKey] = nil
+		end)
+		if not success then
+			if statusLabel then
+				statusLabel.Text = "Rename key failed: " .. tostring(err)
+			end
+			return false, err
+		end
+
+		node.Key = newKey
+		node.Path = (node.Parent and node.Parent.Path or "") .. "/" .. safeToString(newKey, 120)
+		rebuildNodeName(node)
+		if node.Parent then
+			node.Parent.ChildrenLoaded = false
+			node.Parent.Children = {}
+		end
+		if statusLabel then
+			statusLabel.Text = ("Renamed table key: %s -> %s"):format(safeToString(oldKey, 80), safeToString(newKey, 80))
+		end
+		FunctionDumper.Flatten()
+		FunctionDumper.UpdateView()
+		FunctionDumper.Refresh()
+		return true
+	end
+
+	FunctionDumper.AddTableMember = function(node, key, value)
+		if not node or node.ValueType ~= "table" or type(node.Value) ~= "table" then
+			return false, "selected node is not a table"
+		end
+		if key == nil then
+			return false, "table key cannot be nil"
+		end
+
+		local success, err = pcall(function()
+			node.Value[key] = value
+		end)
+		if not success then
+			if statusLabel then
+				statusLabel.Text = "Add table member failed: " .. tostring(err)
+			end
+			return false, err
+		end
+
+		node.ChildrenLoaded = false
+		node.Children = {}
+		rebuildNodeName(node)
+		if statusLabel then
+			statusLabel.Text = ("Added table member %s = <%s> %s"):format(safeToString(key, 80), typeof(value), formatValue(value, typeof(value)))
+		end
+		FunctionDumper.Flatten()
+		FunctionDumper.UpdateView()
+		FunctionDumper.Refresh()
+		return true
+	end
+
+	FunctionDumper.ClearTableMembers = function(node)
+		if not node or node.ValueType ~= "table" or type(node.Value) ~= "table" then
+			return false, "selected node is not a table"
+		end
+
+		local success, err = pcall(function()
+			if table.clear then
+				table.clear(node.Value)
+			else
+				for key in next, node.Value do
+					node.Value[key] = nil
+				end
+			end
+		end)
+		if not success then
+			if statusLabel then
+				statusLabel.Text = "Clear table failed: " .. tostring(err)
+			end
+			return false, err
+		end
+
+		node.ChildrenLoaded = false
+		node.Children = {}
+		rebuildNodeName(node)
+		if statusLabel then
+			statusLabel.Text = "Cleared table members"
+		end
+		FunctionDumper.Flatten()
+		FunctionDumper.UpdateView()
+		FunctionDumper.Refresh()
+		return true
+	end
+
+	FunctionDumper.SetTableReadonly = function(node, readonly)
+		if not node or node.ValueType ~= "table" or type(node.Value) ~= "table" then
+			return false, "selected node is not a table"
+		end
+
+		local setreadonlyFn = (env and env.setreadonly) or setreadonly
+		if not setreadonlyFn then
+			if statusLabel then
+				statusLabel.Text = "setreadonly is not supported by your executor"
+			end
+			return false, "setreadonly is not supported by your executor"
+		end
+
+		local success, err = pcall(setreadonlyFn, node.Value, readonly)
+		if statusLabel then
+			statusLabel.Text = success and (readonly and "Table locked readonly" or "Table unlocked writable") or ("setreadonly failed: " .. tostring(err))
+		end
+		FunctionDumper.Refresh()
+		return success, err
+	end
+
 	FunctionDumper.BlockFunction = function(func, node)
 		if typeof(func) ~= "function" then
 			return false, "selected node is not a function"
@@ -1773,16 +2091,31 @@ local function main()
 		FunctionDumper.Refresh()
 	end
 
-	FunctionDumper.SetEditingNode = function(node, idx)
+	FunctionDumper.SetEditingNode = function(node, idx, mode)
 		editingNode = node
+		editingMode = mode or "Value"
 		local entry = listEntries[idx]
 		if not entry then return end
 
-		editBox.Text = valueToEditText(node.Value, node.ValueType)
-		editBox.PlaceholderText = getEditPlaceholder(node.ValueType)
+		if editingMode == "Key" then
+			editBox.Text = keyToEditText(node.Key)
+			editBox.PlaceholderText = getEditPlaceholder(typeof(node.Key))
+		elseif editingMode == "AddMember" then
+			editBox.Text = ""
+			editBox.PlaceholderText = "key = value or [keyExpr] = =valueExpr"
+		else
+			editBox.Text = valueToEditText(node.Value, node.ValueType)
+			editBox.PlaceholderText = getEditPlaceholder(node.ValueType)
+		end
 		if statusLabel then
-			local editableType = getEditableType(node) or "Value"
-			statusLabel.Text = ("Editing %s value. Current = <%s> %s. Press Enter/check to apply."):format(editableType, node.ValueType, formatValue(node.Value, node.ValueType))
+			if editingMode == "Key" then
+				statusLabel.Text = ("Editing table key. Current = <%s> %s. Press Enter/check to apply."):format(typeof(node.Key), formatValue(node.Key, typeof(node.Key)))
+			elseif editingMode == "AddMember" then
+				statusLabel.Text = "Adding table member. Use key = value, or [keyExpression] = =valueExpression."
+			else
+				local editableType = getEditableType(node) or "Value"
+				statusLabel.Text = ("Editing %s value. Current = <%s> %s. Press Enter/check to apply."):format(editableType, node.ValueType, formatValue(node.Value, node.ValueType))
+			end
 		end
 		local nameSize = service.TextService:GetTextSize(node.Name, 13, Enum.Font.Code, Vector2.new(9999, ROW_H)).X
 		local xPos = node.Depth * INDENT + NAME_OFF + nameSize + 8
@@ -2074,8 +2407,74 @@ local function main()
 					end
 				end
 			})
+
 			context:Add({
-				Name = "Set nil",
+				Name = "Refresh Runtime Value",
+				IconMap = Main.MiscIcons,
+				Icon = "Reference",
+				OnClick = function()
+					FunctionDumper.RefreshNodeValue(selectedNode)
+				end
+			})
+
+			if editableType == "TableValue" then
+				context:Add({
+					Name = "Rename Table Key",
+					IconMap = Main.MiscIcons,
+					Icon = "Rename",
+					OnClick = function()
+						local idx = table.find(tree, selectedNode)
+						if idx then
+							FunctionDumper.SetEditingNode(selectedNode, idx - FunctionDumper.Index, "Key")
+						end
+					end
+				})
+			end
+
+			if selectedNode.ValueType == "table" and type(selectedNode.Value) == "table" then
+				context:Add({
+					Name = "Add Table Member",
+					IconMap = Main.MiscIcons,
+					Icon = "InsertObject",
+					OnClick = function()
+						local idx = table.find(tree, selectedNode)
+						if idx then
+							FunctionDumper.SetEditingNode(selectedNode, idx - FunctionDumper.Index, "AddMember")
+						end
+					end
+				})
+
+				context:Add({
+					Name = "Clear Table Members",
+					IconMap = Main.MiscIcons,
+					Icon = "Delete",
+					OnClick = function()
+						FunctionDumper.ClearTableMembers(selectedNode)
+					end
+				})
+
+				if (env and env.setreadonly) or setreadonly then
+					context:Add({
+						Name = "Unlock Table Writes",
+						IconMap = Main.MiscIcons,
+						Icon = "Play",
+						OnClick = function()
+							FunctionDumper.SetTableReadonly(selectedNode, false)
+						end
+					})
+					context:Add({
+						Name = "Lock Table Readonly",
+						IconMap = Main.MiscIcons,
+						Icon = "Pause",
+						OnClick = function()
+							FunctionDumper.SetTableReadonly(selectedNode, true)
+						end
+					})
+				end
+			end
+
+			context:Add({
+				Name = editableType == "TableValue" and "Delete Table Member" or "Set nil",
 				IconMap = Main.MiscIcons,
 				Icon = "Delete",
 				OnClick = function()
@@ -2110,14 +2509,11 @@ local function main()
 			fNode = fNode.Parent
 		end
 		if fNode and fNode.Func then
-			local getinfo = (debug and (debug.getinfo or debug.info)) or getinfo
 			local lineDefined = 1
-			pcall(function()
-				local info = getinfo(fNode.Func)
-				if info and info.linedefined and info.linedefined > 0 then
-					lineDefined = info.linedefined
-				end
-			end)
+			local info = getFunctionInfoSafe(fNode.Func)
+			if info and tonumber(info.linedefined) and tonumber(info.linedefined) > 0 then
+				lineDefined = tonumber(info.linedefined)
+			end
 
 			context:Add({
 				Name = "Go to Definition",
@@ -2292,6 +2688,45 @@ local function main()
 
 		local function updateEditPreview()
 			if not editingNode or not editBox.Visible then return end
+			if editingMode == "Key" then
+				local keyType = typeof(editingNode.Key)
+				if isExpressionEdit(editBox.Text, keyType) then
+					editBox.TextColor3 = Settings.Theme.Text
+					if statusLabel then
+						statusLabel.Text = ("Editing key <%s>. Expression will run when confirmed."):format(keyType)
+					end
+					return
+				end
+
+				local ok, keyOrErr = parseValue(editBox.Text, keyType, false)
+				if ok and keyOrErr ~= nil then
+					editBox.TextColor3 = Settings.Theme.Text
+					if statusLabel then
+						statusLabel.Text = ("Preview table key = <%s> %s"):format(typeof(keyOrErr), formatValue(keyOrErr, typeof(keyOrErr)))
+					end
+				else
+					editBox.TextColor3 = Color3.fromRGB(255, 120, 120)
+					if statusLabel then
+						statusLabel.Text = ok and "Edit parse error: table key cannot be nil" or ("Edit parse error: " .. tostring(keyOrErr))
+					end
+				end
+				return
+			elseif editingMode == "AddMember" then
+				local ok, keyOrErr, value = parseTableAssignment(editBox.Text, false)
+				if ok then
+					editBox.TextColor3 = Settings.Theme.Text
+					if statusLabel then
+						statusLabel.Text = ("Preview add %s = <%s> %s"):format(safeToString(keyOrErr, 80), typeof(value), formatValue(value, typeof(value)))
+					end
+				else
+					editBox.TextColor3 = Color3.fromRGB(255, 120, 120)
+					if statusLabel then
+						statusLabel.Text = "Add parse error: " .. tostring(keyOrErr)
+					end
+				end
+				return
+			end
+
 			local valueType = editingNode.ValueType
 			if isExpressionEdit(editBox.Text, valueType) then
 				editBox.TextColor3 = Settings.Theme.Text
@@ -2321,14 +2756,37 @@ local function main()
 		editBox.FocusLost:Connect(function(enterPressed)
 			if not editingNode then return end
 			local node = editingNode
+			local mode = editingMode
 			if enterPressed then
-				local ok, newValueOrErr = parseValue(editBox.Text, node.ValueType, true)
-				if ok then
-					FunctionDumper.ApplyNodeEdit(node, newValueOrErr)
+				if mode == "Key" then
+					local ok, newKeyOrErr = parseValue(editBox.Text, typeof(node.Key), true)
+					if ok and newKeyOrErr ~= nil then
+						FunctionDumper.RenameTableKey(node, newKeyOrErr)
+					else
+						warn("[Axon Dumper] Failed to parse key edit: " .. tostring(newKeyOrErr))
+						if statusLabel then
+							statusLabel.Text = ok and "Edit parse error: table key cannot be nil" or ("Edit parse error: " .. tostring(newKeyOrErr))
+						end
+					end
+				elseif mode == "AddMember" then
+					local ok, keyOrErr, value = parseTableAssignment(editBox.Text, true)
+					if ok then
+						FunctionDumper.AddTableMember(node, keyOrErr, value)
+					else
+						warn("[Axon Dumper] Failed to parse table member: " .. tostring(keyOrErr))
+						if statusLabel then
+							statusLabel.Text = "Add parse error: " .. tostring(keyOrErr)
+						end
+					end
 				else
-					warn("[Axon Dumper] Failed to parse edit: " .. tostring(newValueOrErr))
-					if statusLabel then
-						statusLabel.Text = "Edit parse error: " .. tostring(newValueOrErr)
+					local ok, newValueOrErr = parseValue(editBox.Text, node.ValueType, true)
+					if ok then
+						FunctionDumper.ApplyNodeEdit(node, newValueOrErr)
+					else
+						warn("[Axon Dumper] Failed to parse edit: " .. tostring(newValueOrErr))
+						if statusLabel then
+							statusLabel.Text = "Edit parse error: " .. tostring(newValueOrErr)
+						end
 					end
 				end
 			end
@@ -2336,6 +2794,7 @@ local function main()
 			editBox.Visible = false
 			confirmBtn.Visible = false
 			editingNode = nil
+			editingMode = "Value"
 			FunctionDumper.Refresh()
 		end)
 

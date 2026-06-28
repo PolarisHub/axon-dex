@@ -4109,8 +4109,8 @@ local function main()
 		local MAX_FIND_MATCHES = 20
 		local FIND_SCAN_BUDGET = 0.0015
 		local FIND_SCAN_CHARS = 6000
-		local FIND_DEBOUNCE_SHORT = 0.08
-		local FIND_DEBOUNCE_SINGLE = 0.18
+		local FIND_DEBOUNCE_SHORT = 0.03
+		local FIND_DEBOUNCE_SINGLE = 0.05
 
 		local function getCodeFontWidth(fontSize)
 			local cached = fontWidthCache[fontSize]
@@ -4442,7 +4442,7 @@ local function main()
 			findPrev.Font = Enum.Font.SourceSansBold
 			findPrev.Position = UDim2.new(1, -60, 0, 2)
 			findPrev.Size = UDim2.new(0, 18, 1, -4)
-			findPrev.Text = "▲"
+			findPrev.Text = "^"
 			findPrev.TextColor3 = Settings.Theme.Text
 			findPrev.TextSize = 14
 			findPrev.ZIndex = 21
@@ -4457,7 +4457,7 @@ local function main()
 			findNext.Font = Enum.Font.SourceSansBold
 			findNext.Position = UDim2.new(1, -40, 0, 2)
 			findNext.Size = UDim2.new(0, 18, 1, -4)
-			findNext.Text = "▼"
+			findNext.Text = "v"
 			findNext.TextColor3 = Settings.Theme.Text
 			findNext.TextSize = 14
 			findNext.ZIndex = 21
@@ -4469,7 +4469,7 @@ local function main()
 			findClose.Font = Enum.Font.SourceSansBold
 			findClose.Position = UDim2.new(1, -18, 0, 0)
 			findClose.Size = UDim2.new(0, 18, 1, 0)
-			findClose.Text = "×"
+			findClose.Text = "x"
 			findClose.TextColor3 = Settings.Theme.Text
 			findClose.TextSize = 14
 			findClose.ZIndex = 21
@@ -4627,6 +4627,10 @@ local function main()
 			local query = self.FindQuery or ""
 			local matches = {}
 			local matchesByLine = {}
+			local totalLines = #self.Lines
+			local anchorLine, anchorColumn = self:GetFindAnchor()
+			anchorLine = math.max(1, math.min(anchorLine or 1, math.max(totalLines, 1)))
+			anchorColumn = math.max(1, anchorColumn or 1)
 			self.FindMatches = matches
 			self.FindMatchesByLine = matchesByLine
 			self.FindIndex = 0
@@ -4693,9 +4697,10 @@ local function main()
 
 				local queryLen = #query
 				local ops = 0
-				for lineIndex, lineText in ipairs(self.Lines) do
+				local function scanLine(lineIndex, firstColumn)
+					local lineText = self.Lines[lineIndex] or ""
 					local lineLen = #lineText
-					local startPos = 1
+					local startPos = math.max(1, math.min(firstColumn or 1, lineLen + 1))
 					while startPos <= lineLen do
 						local chunkEnd = math.min(lineLen, startPos + FIND_SCAN_CHARS - 1)
 						local searchEnd = math.min(lineLen, chunkEnd + queryLen - 1)
@@ -4718,25 +4723,35 @@ local function main()
 
 							chunkSearchPos = foundStart + math.max(queryLen, 1)
 							ops = ops + 1
-							if ops % 12 == 0 and not yieldIfNeeded(false) then return end
+							if ops % 12 == 0 and not yieldIfNeeded(false) then return false end
 						end
 
 						if self.FindMatchesCapped then break end
 
 						startPos = chunkEnd + 1
 						ops = ops + 1
-						if not yieldIfNeeded(false) then return end
+						if not yieldIfNeeded(false) then return false end
 					end
 
-					if self.FindMatchesCapped then break end
-					if lineIndex % 40 == 0 and not yieldIfNeeded(false) then return end
+					if lineIndex % 40 == 0 and not yieldIfNeeded(false) then return false end
+					return not self.FindMatchesCapped
+				end
+
+				for lineIndex = anchorLine, totalLines do
+					local firstColumn = lineIndex == anchorLine and anchorColumn or 1
+					if scanLine(lineIndex, firstColumn) == false then break end
+				end
+
+				if not self.FindMatchesCapped and anchorLine > 1 then
+					for lineIndex = 1, anchorLine - 1 do
+						if scanLine(lineIndex, 1) == false then break end
+					end
 				end
 
 				if scanToken ~= self.FindScanToken or query ~= self.FindQuery then return end
 				self.FindScanning = false
 				if selectMatch and #matches > 0 then
-					local line, column = self:GetFindAnchor()
-					self:SelectFindMatch(self:GetFindIndexFromPosition(line, column, false, true))
+					self:SelectFindMatch(1)
 				else
 					self:UpdateFindCount()
 					self:Refresh()
@@ -4779,8 +4794,7 @@ local function main()
 
 			local current = self.FindIndex or 0
 			if current < 1 or current > #matches then
-				local line, column = self:GetFindAnchor()
-				current = self:GetFindIndexFromPosition(line, column, backwards, false)
+				current = backwards and #matches or 1
 			elseif backwards then
 				current = current <= 1 and #matches or current - 1
 			else
@@ -4825,8 +4839,7 @@ local function main()
 			elems.FindBox.CursorPosition = #elems.FindBox.Text + 1
 			local matches = self.FindMatches or {}
 			if #matches > 0 and ((self.FindIndex or 0) < 1 or (self.FindIndex or 0) > #matches) then
-				local line, column = self:GetFindAnchor()
-				self:SelectFindMatch(self:GetFindIndexFromPosition(line, column, false, true))
+				self:SelectFindMatch(1)
 			else
 				self:UpdateFindCount()
 			end
@@ -5359,6 +5372,7 @@ local function main()
 			-- Move cursor to that line
 			self.CursorX = 0
 			self.CursorY = lineY
+			self.FloatCursorX = 0
 			self:UpdateCursor()
 			self:Refresh()
 		end
